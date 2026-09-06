@@ -67,3 +67,35 @@ class ImportanceScore(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
     factors: ImportanceFactors
     explanation: str
+
+class RelationshipResult(BaseModel):
+    """Structured evidence of relationship between two files."""
+    relationship_type: Literal["DUPLICATE_CONFIRMED", "DUPLICATE_CANDIDATE", "RELATED", "NONE"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    related_object: str
+    evidence: List[str]
+
+from enum import Enum
+
+class ExecutionMode(str, Enum):
+    SAFE = "SAFE"
+    AUTONOMOUS = "AUTONOMOUS"
+    TURBO = "TURBO"
+
+class ActionRequest(BaseModel):
+    """A request to execute a specific action on an object."""
+    s3_uri: str
+    bucket: str
+    key: str
+    requested_action: Literal["KEEP", "ARCHIVE", "REVIEW", "QUARANTINE", "DELETE"]
+    reason: str
+    risk: Literal["LOW", "MEDIUM", "HIGH"]
+    execution_mode: ExecutionMode = ExecutionMode.SAFE
+    human_approved: bool = False
+
+class ActionResult(BaseModel):
+    """The result of an executed action."""
+    action: Literal["KEEP", "ARCHIVE", "REVIEW", "QUARANTINE", "DELETE"]
+    key: str
+    status: Literal["VERIFIED", "VERIFIED_NO_ACTION", "PENDING_APPROVAL", "BLOCKED", "FAILED"]
+    message: str

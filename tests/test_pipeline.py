@@ -13,12 +13,20 @@ def test_pipeline_skip_inference():
     mock_s3.get_paginator.return_value = mock_paginator
     dt = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
     mock_paginator.paginate.return_value = [{
-        'Contents': [{
-            'Key': 'demo/doc.txt',
-            'LastModified': dt,
-            'Size': 12,
-            'ETag': '"etag"'
-        }]
+        'Contents': [
+            {
+                'Key': 'demo/doc.txt',
+                'LastModified': dt,
+                'Size': 12,
+                'ETag': '"etag"'
+            },
+            {
+                'Key': 'demo/doc-copy.txt',
+                'LastModified': dt,
+                'Size': 12,
+                'ETag': '"etag"'
+            }
+        ]
     }]
     
     # Mock content reader get_object
@@ -39,6 +47,10 @@ def test_pipeline_skip_inference():
     assert result["content_size"] == 12
     assert result["content_preview"] == "Hello, test!"
     assert result["metadata"]["size_bytes"] == 12
+    assert "relationships" in result
+    assert isinstance(result["relationships"], list)
+    assert len(result["relationships"]) == 1
+    assert result["relationships"][0]["relationship_type"] == "DUPLICATE_CANDIDATE"
     assert "partial_importance_score" in result
     assert result["partial_importance_score"]["score"] >= 0.0
 

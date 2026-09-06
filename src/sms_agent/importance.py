@@ -2,7 +2,8 @@ import math
 from datetime import datetime, timezone
 from typing import Optional
 
-from .models import FileMetadata, SemanticAnalysisResult, ImportanceScore, ImportanceFactors
+from .models import FileMetadata, SemanticAnalysisResult, ImportanceScore, ImportanceFactors, RelationshipResult
+from typing import Optional, List
 
 class ImportanceScorer:
     """Deterministically calculates document importance based on multiple factors."""
@@ -86,7 +87,7 @@ class ImportanceScorer:
             
         return 0.3
         
-    def score(self, metadata: FileMetadata, analysis: Optional[SemanticAnalysisResult] = None) -> ImportanceScore:
+    def score(self, metadata: FileMetadata, analysis: Optional[SemanticAnalysisResult] = None, relationships: Optional[List[RelationshipResult]] = None) -> ImportanceScore:
         """
         Calculate the total deterministic importance score.
         """
@@ -94,8 +95,28 @@ class ImportanceScorer:
         f_relevance = self._calculate_content_relevance(analysis)
         f_sensitivity = self._calculate_sensitivity(analysis)
         f_doc = self._calculate_document_importance(metadata)
-        f_dup_penalty = 0.4 if metadata.is_duplicate else 0.0
         
+        f_dup_penalty = 0.0
+        is_confirmed = False
+        is_candidate = False
+        
+        # Check explicit relationships if provided
+        if relationships:
+            for rel in relationships:
+                if rel.relationship_type == "DUPLICATE_CONFIRMED":
+                    is_confirmed = True
+                elif rel.relationship_type == "DUPLICATE_CANDIDATE":
+                    is_candidate = True
+                    
+        # Fallback to metadata flag if relationships weren't run/provided
+        elif metadata.is_duplicate:
+            is_candidate = True
+            
+        if is_confirmed:
+            f_dup_penalty = 0.6
+        elif is_candidate:
+            f_dup_penalty = 0.4
+            
         # Weighted combination of positive factors
         # recency: 20%, relevance: 30%, sensitivity: 20%, doc_importance: 30%
         base_score = (
@@ -129,7 +150,9 @@ class ImportanceScorer:
         if f_sensitivity >= 0.8:
             explanation_parts.append("and high sensitivity")
             
-        if f_dup_penalty > 0:
+        if is_confirmed:
+            explanation_parts.append("(confirmed duplicate)")
+        elif is_candidate:
             explanation_parts.append("(flagged as a duplicate candidate)")
             
         explanation = " ".join(explanation_parts).strip().capitalize() + "."
