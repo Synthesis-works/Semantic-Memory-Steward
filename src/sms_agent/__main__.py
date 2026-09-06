@@ -1,20 +1,21 @@
 import os
-from .agent import SMSAgent
 import sys
+import json
 from .agent import SMSAgent
+from .pipeline import SMSPipeline
 from .s3_inventory import S3InventoryCollector
 
 def run_analysis():
     print("Initializing Semantic Memory Steward (SMS) Agent...")
     print(">>> NOTE: Performing ONE REAL Bedrock Inference <<<")
-    
+
     # Ensure AWS profile and region are set correctly for the real inference
     os.environ["AWS_PROFILE"] = "opencode"
     os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
-    
+
     # Use Amazon Nova Lite as requested
     agent = SMSAgent(model_id="amazon.nova-lite-v1:0")
-    
+
     synthetic_file_key = "finance/Q3-report-draft.txt"
     synthetic_content = (
         "Q3 2026 Financial Report — Draft\n"
@@ -27,23 +28,23 @@ def run_analysis():
         "last_modified": "2026-08-20",
         "size_bytes": 18432
     }
-    
+
     print(f"\nAnalyzing synthetic file: {synthetic_file_key}")
     print(f"Content snippet: {synthetic_content[:50]}...")
-    
+
     try:
         result = agent.analyze_file(
-            file_key=synthetic_file_key, 
-            content=synthetic_content, 
+            file_key=synthetic_file_key,
+            content=synthetic_content,
             metadata=synthetic_metadata
         )
-        
+
         print("\n--- Analysis Result ---")
         print(result.model_dump_json(indent=2))
         print("-----------------------")
         print(f"Recommended Action: {result.recommended_action.upper()}")
         print(f"Reasoning: {result.reasoning}")
-        
+
     except Exception as e:
         print(f"Error during analysis: {e}")
 
@@ -51,20 +52,20 @@ def run_s3_inventory():
     # Ensure AWS profile and region are set correctly
     os.environ["AWS_PROFILE"] = "opencode"
     os.environ["AWS_DEFAULT_REGION"] = os.getenv("AWS_REGION", "us-east-1")
-    
+
     bucket = os.getenv("SMS_S3_BUCKET")
     if not bucket:
         print("Error: SMS_S3_BUCKET environment variable must be set.")
         sys.exit(1)
-        
+
     print(f"Connecting to S3 bucket: {bucket}")
-    
+
     collector = S3InventoryCollector(bucket_name=bucket)
     inventory = collector.collect()
-    
+
     print(f"Objects found: {len(inventory)}\n")
     total_size = 0
-    
+
     for item in inventory:
         total_size += item.size_bytes
         print(f"- {item.key}")
@@ -74,24 +75,24 @@ def run_s3_inventory():
         if item.is_duplicate:
             print("  duplicate candidate: True")
         print()
-        
+
     print(f"Approximate total size: {total_size} bytes")
 
 def run_s3_read(file_key: str):
     import datetime
     from .s3_content import S3ContentReader
     from .models import FileMetadata
-    
+
     os.environ["AWS_PROFILE"] = "opencode"
     os.environ["AWS_DEFAULT_REGION"] = os.getenv("AWS_REGION", "us-east-1")
-    
+
     bucket = os.getenv("SMS_S3_BUCKET")
     if not bucket:
         print("Error: SMS_S3_BUCKET environment variable must be set.")
         sys.exit(1)
-        
+
     print(f"Retrieving '{file_key}' from bucket '{bucket}'...")
-    
+
     # We construct a synthetic minimal FileMetadata to pass to the reader
     # In full production, this would come from the inventory layer
     _, ext = os.path.splitext(file_key)
@@ -102,11 +103,11 @@ def run_s3_read(file_key: str):
         created_at=datetime.datetime.now(datetime.timezone.utc),
         bucket=bucket
     )
-    
-    # To be fully safe and follow the reader's rules, let's actually just let the reader 
+
+    # To be fully safe and follow the reader's rules, let's actually just let the reader
     # check it against a reasonable test limit if we want, but since it's manual, we can set max_bytes high.
     reader = S3ContentReader()
-    
+
     try:
         content = reader.get_text(meta)
         print("\n=== CONTENT START ===")
@@ -117,21 +118,18 @@ def run_s3_read(file_key: str):
         print(f"Error reading from S3: {e}")
 
 def run_pipeline(file_key: str):
-    from .pipeline import SMSPipeline
-    import json
-    
     os.environ["AWS_PROFILE"] = "opencode"
     os.environ["AWS_DEFAULT_REGION"] = os.getenv("AWS_REGION", "us-east-1")
-    
+
     bucket = os.getenv("SMS_S3_BUCKET")
     if not bucket:
         print("Error: SMS_S3_BUCKET environment variable must be set.")
         sys.exit(1)
-        
+
     print(f"Running pipeline for '{file_key}' in bucket '{bucket}'...")
-    
+
     pipeline = SMSPipeline(bucket_name=bucket)
-    
+
     try:
         # Skip inference because Bedrock is known to be blocked
         result = pipeline.process_object(file_key, skip_inference=True)
@@ -143,6 +141,80 @@ def run_pipeline(file_key: str):
         print("Waiting for AWS account restriction lift before executing real Bedrock inference.")
     except Exception as e:
         print(f"Error during pipeline execution: {e}")
+
+def run_analyze_s3():
+    # Ensure AWS profile and region are set correctly
+    os.environ["AWS_PROFILE"] = "opencode"
+    os.environ["AWS_DEFAULT_REGION"] = os.getenv("AWS_REGION", "us-east-1")
+
+    bucket = os.getenv("SMS_S3_BUCKET")
+    if not bucket:
+        print("Error: SMS_S3_BUCKET environment variable must be set.")
+        sys.exit(1)
+
+    print("==================================================")
+    print("SMS S3 Analysis")
+    print("==================================================\n")
+    print(f"Connecting to S3 bucket: {bucket}...")
+
+    try:
+        collector = S3InventoryCollector(bucket_name=bucket)
+        inventory = collector.collect()
+    except Exception as e:
+        print(f"Failed to collect inventory: {e}")
+        sys.exit(1)
+
+    print(f"Objects discovered: {len(inventory)}\n")
+
+    pipeline = SMSPipeline(bucket_name=bucket)
+
+    for item in inventory:
+        print(item.key)
+        try:
+            # Process the object, skip actual mutation by passing execute_action=False
+            # and do not skip inference
+            result = pipeline.process_object(item.key, skip_inference=False, execute_action=False)
+
+            # Print output
+            if "analysis" in result:
+                analysis = result["analysis"]
+                print(f"  Category: {analysis.get('category', 'Unknown')}")
+                if "sensitivity" in analysis:
+                    print(f"  Sensitivity: {analysis['sensitivity'].title()}")
+
+            if "importance" in result:
+                imp = result["importance"]
+                print(f"  Importance: {imp.get('score', 0.0):.2f}")
+
+            if "relationships" in result and result["relationships"]:
+                rels = result["relationships"]
+                for rel in rels:
+                    print(f"  Relationship: {rel.get('relationship_type', 'Unknown').replace('_', ' ').title()}")
+                    print(f"  Related to: {rel.get('related_object', 'Unknown')}")
+                    print(f"  Confidence: {rel.get('confidence', 0.0):.2f}")
+
+            if "decision" in result:
+                decision = result["decision"]
+                print(f"  Recommendation: {decision.get('action', 'KEEP')}")
+
+            if "action_request" in result:
+                req = result["action_request"]
+                req_action = req.get("requested_action", "NONE")
+
+                # Fetch approval requirement from the policy decision
+                decision_info = result.get("decision", {})
+                is_approval_req = decision_info.get("requires_human_approval", False)
+                approval_str = "Required" if is_approval_req else "Not Required"
+
+                print(f"  Policy: {req_action}")
+                print(f"  Approval: {approval_str}")
+                print(f"  Action: Not Executed")
+
+        except Exception as e:
+            print(f"  ANALYSIS FAILED")
+            print(f"  Reason: {e}")
+
+        print()
 
 def main():
     if len(sys.argv) > 1:
@@ -159,6 +231,8 @@ def main():
                 print("Usage: python -m src.sms_agent pipeline <file_key>")
                 sys.exit(1)
             run_pipeline(sys.argv[2])
+        elif command == "analyze-s3":
+            run_analyze_s3()
         else:
             print(f"Unknown command: {command}")
     else:
