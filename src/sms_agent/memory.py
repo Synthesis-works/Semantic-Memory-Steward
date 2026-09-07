@@ -1,8 +1,8 @@
-"""
+﻿"""
 Persistent semantic memory for Semantic Memory Steward.
 
-DynamoDBMemoryStore  — metadata records in DynamoDB.
-S3VectorStore        — embeddings via Amazon S3 Vectors API.
+DynamoDBMemoryStore  â€” metadata records in DynamoDB.
+S3VectorStore        â€” embeddings via Amazon S3 Vectors API.
 
 Neither implementation calls AWS during __init__; clients are injected for
 testability. Production code obtains real clients lazily.
@@ -12,7 +12,7 @@ Persistence ordering contract (HIGH-3):
   2. Only if that succeeds, write metadata to DynamoDB.
   This ensures DynamoDB never claims a vector exists that was not persisted.
   Orphaned vectors (vector written but DynamoDB write fails) are possible but
-  acceptable for an MVP — they are inert and do not cause incorrect results.
+  acceptable for an MVP â€” they are inert and do not cause incorrect results.
 """
 import os
 import logging
@@ -42,7 +42,7 @@ def validate_memory_config(
     fully disabled. Partial configuration is logged as a clear warning.
 
     Raises:
-        ValueError — if the configuration is partially enabled in a way that
+        ValueError â€” if the configuration is partially enabled in a way that
                      would produce inconsistent state (e.g. vector store
                      configured without a memory store).
 
@@ -64,22 +64,22 @@ def validate_memory_config(
     issues = []
     if has_vector and not has_memory:
         issues.append(
-            "vector_store is configured but memory_store is missing — "
+            "vector_store is configured but memory_store is missing â€” "
             "vectors will be orphaned with no associated metadata."
         )
     if has_memory and not has_vector:
         issues.append(
-            "memory_store is configured but vector_store is missing — "
+            "memory_store is configured but vector_store is missing â€” "
             "DynamoDB records will carry stale/invalid vector_id references."
         )
     if (has_memory or has_vector) and not has_embed:
         issues.append(
-            "memory_store or vector_store is configured but embedding_provider is missing — "
+            "memory_store or vector_store is configured but embedding_provider is missing â€” "
             "new documents cannot be embedded."
         )
     if has_embed and not has_memory and not has_vector:
         issues.append(
-            "embedding_provider is configured but memory_store and vector_store are missing — "
+            "embedding_provider is configured but memory_store and vector_store are missing â€” "
             "embeddings will be generated but nowhere to store them."
         )
 
@@ -106,7 +106,7 @@ class DynamoDBMemoryStore:
     """
     Stores/retrieves SemanticMemoryRecord objects in DynamoDB.
 
-    The raw vector is NOT stored here — only a vector_id reference.
+    The raw vector is NOT stored here â€” only a vector_id reference.
     Table must be provisioned externally before use:
         Table name   : SMS_DYNAMO_TABLE env var (default: sms-semantic-memory)
         Partition key: s3_uri (String)
@@ -161,7 +161,7 @@ class DynamoDBMemoryStore:
                 size_bytes=int(item["size_bytes"]),
                 category=item["category"],
                 sensitivity=item["sensitivity"],
-                importance_score=float(item["importance_score"]),  # Decimal → float
+                importance_score=float(item["importance_score"]),  # Decimal â†’ float
                 analysis_timestamp=datetime.fromisoformat(item["analysis_timestamp"]),
                 embedding_model=item["embedding_model"],
                 vector_id=item["vector_id"],
@@ -175,7 +175,7 @@ class DynamoDBMemoryStore:
     def save_record(self, record: SemanticMemoryRecord) -> None:
         """
         Persist a SemanticMemoryRecord.
-        Uses put_item (upsert semantics — idempotent for the same s3_uri).
+        Uses put_item (upsert semantics â€” idempotent for the same s3_uri).
 
         importance_score is stored as a DynamoDB Number (Decimal) so numeric
         comparators remain available for future queries.
@@ -217,13 +217,13 @@ class S3VectorStore:
     Stores and queries embeddings via Amazon S3 Vectors.
 
     Requires:
-        SMS_VECTOR_BUCKET — name of the S3 Vectors bucket (must exist)
-        SMS_VECTOR_INDEX  — index name inside that bucket (default: sms-embeddings)
+        SMS_VECTOR_BUCKET â€” name of the S3 Vectors bucket (must exist)
+        SMS_VECTOR_INDEX  â€” index name inside that bucket (default: sms-embeddings)
 
     The bucket/index must be provisioned externally before use.
     This class is purely a data-access layer; it performs no AWS provisioning.
 
-    IMPORTANT — distance metric assumption:
+    IMPORTANT â€” distance metric assumption:
         S3 Vectors supports 'cosine' and 'euclidean' distance metrics,
         configured at index-creation time. This implementation assumes 'cosine'
         distance (lower = more similar), where similarity = 1 - distance.
@@ -231,19 +231,30 @@ class S3VectorStore:
         comparisons to be meaningful.
 
     boto3 S3 Vectors API used:
-        put_vectors   — upsert one or more vectors
-        query_vectors — approximate nearest-neighbour search (returnMetadata=True)
-        get_vectors   — retrieve stored vector data by key (for cache-hit reuse)
+        put_vectors   â€” upsert one or more vectors
+        query_vectors â€” approximate nearest-neighbour search (returnMetadata=True)
+        get_vectors   â€” retrieve stored vector data by key (for cache-hit reuse)
     """
 
     def __init__(
         self,
         vector_bucket: Optional[str] = None,
         index_name: Optional[str] = None,
+        dimension: Optional[int] = None,
         s3vectors_client=None,
     ):
         self._bucket = vector_bucket or os.environ.get(_S3V_BUCKET_ENV, "")
         self._index = index_name or os.environ.get(_S3V_INDEX_ENV, _DEFAULT_S3V_INDEX)
+
+        # Determine dimension explicitly
+        env_dim = os.environ.get("SMS_VECTOR_DIMENSION")
+        if dimension is not None:
+            self._dimension = dimension
+        elif env_dim:
+            self._dimension = int(env_dim)
+        else:
+            self._dimension = 768
+
         self._client = s3vectors_client  # Injected for testing
 
     def _s3v(self):
@@ -263,7 +274,14 @@ class S3VectorStore:
         """
         if not self._bucket:
             raise RuntimeError(
-                "SMS_VECTOR_BUCKET environment variable is required for S3VectorStore"
+                f"S3VectorStore requires a vector bucket name. Set {_S3V_BUCKET_ENV}."
+            )
+
+        actual_dim = len(embedding.vector)
+        if actual_dim != self._dimension:
+            raise ValueError(
+                f"Embedding dimension mismatch: expected {self._dimension}, got {actual_dim}. "
+                f"Reconfigure SMS_VECTOR_DIMENSION or use a compatible model."
             )
 
         vector_item = {
@@ -329,7 +347,7 @@ class S3VectorStore:
         Returns an empty list if the bucket is not configured.
         """
         if not self._bucket:
-            log.warning("SMS_VECTOR_BUCKET not set — vector search unavailable")
+            log.warning("SMS_VECTOR_BUCKET not set â€” vector search unavailable")
             return []
 
         try:

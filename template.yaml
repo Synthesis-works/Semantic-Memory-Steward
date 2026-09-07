@@ -39,6 +39,8 @@ Resources:
         - AttributeName: s3_uri
           KeyType: HASH
       # Note: MVP intentionally omits point-in-time recovery to keep costs minimal.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
       
   # -------------------------------------------------------------------------
   # 2. IAM Role for Custom Resource Lambda
@@ -143,19 +145,9 @@ Resources:
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, {"Status": "Updated"}, bucket_name)
                       
                   elif request_type == 'Delete':
-                      log.info("Deleting index %s from %s", index_name, bucket_name)
-                      try:
-                          client.delete_index(vectorBucketName=bucket_name, indexName=index_name)
-                      except Exception as e:
-                          log.warning("Delete index failed: %s", e)
-                      
-                      log.info("Deleting vector bucket %s", bucket_name)
-                      try:
-                          client.delete_vector_bucket(vectorBucketName=bucket_name)
-                      except Exception as e:
-                          log.warning("Delete bucket failed: %s", e)
-                          
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {"Status": "Deleted"}, bucket_name)
+                      log.info("Intentionally retaining index %s and bucket %s during stack deletion", index_name, bucket_name)
+                      # Explicitly doing nothing to safeguard vector data against accidental stack destruction
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {"Status": "Deleted (Retained)"}, bucket_name)
                       
               except Exception as e:
                   log.error("Failed: %s", str(e))

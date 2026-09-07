@@ -255,13 +255,20 @@ class TestS3VectorStore:
 
     def test_upsert_calls_put_vectors(self):
         client = self._mock_client()
-        store = S3VectorStore(vector_bucket="test-bucket", s3vectors_client=client)
+        store = S3VectorStore(vector_bucket="test-bucket", dimension=2, s3vectors_client=client)
         emb = Embedding(vector_id="v1", vector=[0.1, 0.2], metadata={"s3_uri": "s3://b/k"})
         store.upsert(emb)
         client.put_vectors.assert_called_once()
         args = client.put_vectors.call_args[1]
         assert args["vectorBucketName"] == "test-bucket"
         assert args["vectors"][0]["key"] == "v1"
+
+    def test_upsert_raises_on_dimension_mismatch(self):
+        client = self._mock_client()
+        store = S3VectorStore(vector_bucket="test-bucket", dimension=768, s3vectors_client=client)
+        emb = Embedding(vector_id="v1", vector=[0.1, 0.2], metadata={})
+        with pytest.raises(ValueError, match="expected 768, got 2"):
+            store.upsert(emb)
 
     def test_search_calls_query_vectors_with_return_metadata_true(self):
         """FIX HIGH-1: query_vectors must include returnMetadata=True."""
