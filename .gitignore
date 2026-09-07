@@ -1,4 +1,4 @@
-__pycache__/
+﻿__pycache__/
 *.py[cod]
 *.class
 .env
@@ -12,3 +12,5 @@ venv.bak/
 .vscode/
 *.log
 *.egg-info/
+layer/
+packaged.yaml

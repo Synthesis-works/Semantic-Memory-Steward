@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Minimal MVP infrastructure for Semantic Memory Steward (SMS).
+  Defines the DynamoDB table for metadata and a Custom Resource for S3 Vectors.
+
+Parameters:
+  DynamoTableName:
+    Type: String
+    Default: sms-semantic-memory
+    Description: The name of the DynamoDB table for persistent semantic memory.
+
+  VectorBucketName:
+    Type: String
+    Description: The name of the new S3 Vectors bucket to create.
+
+  VectorIndexName:
+    Type: String
+    Default: sms-embeddings
+    Description: The name of the index within the S3 Vectors bucket.
+
+  VectorDimension:
+    Type: Number
+    Default: 768
+    Description: The dimensionality of the vectors (768 for gemini-embedding-2, 1024 for titan-embed-text-v2).
+
+Resources:
+  # -------------------------------------------------------------------------
+  # 1. DynamoDB Table for Semantic Memory Metadata
+  # -------------------------------------------------------------------------
+  SemanticMemoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref DynamoTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: s3_uri
+          AttributeType: S
+      KeySchema:
+        - AttributeName: s3_uri
+          KeyType: HASH
+      # Note: MVP intentionally omits point-in-time recovery to keep costs minimal.
+      
+  # -------------------------------------------------------------------------
+  # 2. IAM Role for Custom Resource Lambda
+  # -------------------------------------------------------------------------
+  S3VectorsCustomResourceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3VectorsAdmin
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3vectors:CreateVectorBucket
+                  - s3vectors:DeleteVectorBucket
+                  - s3vectors:CreateIndex
+                  - s3vectors:DeleteIndex
+                Resource: "*"
+
+  # -------------------------------------------------------------------------
+  # 3. Lambda Layer for updated boto3 (Fix #3)
+  # -------------------------------------------------------------------------
+  S3VectorsBoto3Layer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.12
+      Description: "boto3 >= 1.43.89 containing the s3vectors service client"
+      Content: layer/
+
+  # -------------------------------------------------------------------------
+  # 4. Custom Resource Lambda to Provision S3 Vectors
+  # -------------------------------------------------------------------------
+  S3VectorsProvisionerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt S3VectorsCustomResourceRole.Arn
+      Runtime: python3.12
+      Timeout: 120
+      Layers:
+        - !Ref S3VectorsBoto3Layer
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          import boto3
+          import cfnresponse
+
+          log = logging.getLogger()
+          log.setLevel(logging.INFO)
+
+          def handler(event, context):
+              log.info("Received event: %s", json.dumps(event))
+              request_type = event['RequestType']
+              props = event['ResourceProperties']
+              
+              bucket_name = props['VectorBucketName']
+              index_name = props['VectorIndexName']
+              dimension = int(props['VectorDimension'])
+              
+              try:
+                  # Fix #1: boto3 client init inside try/except to prevent stack hang on UnknownServiceError
+                  client = boto3.client('s3vectors')
+                  
+                  if request_type == 'Create':
+                      # Create bucket
+                      log.info("Creating vector bucket: %s", bucket_name)
+                      try:
+                          client.create_vector_bucket(vectorBucketName=bucket_name)
+                      except Exception as e:
+                          if 'AlreadyExists' not in str(e) and 'Conflict' not in str(e):
+                              raise
+                      
+                      # Create index
+                      log.info("Creating index %s in %s (dim=%d, metric=cosine)", index_name, bucket_name, dimension)
+                      try:
+                          client.create_index(
+                              vectorBucketName=bucket_name,
+                              indexName=index_name,
+                              dataType='float32',
+                              dimension=dimension,
+                              distanceMetric='cosine'
+                          )
+                      except Exception as e:
+                          # Fix #2: handle existing index for idempotency
+                          if 'AlreadyExists' not in str(e) and 'Conflict' not in str(e):
+                              raise
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {"Status": "Created"}, bucket_name)
+                      
+                  elif request_type == 'Update':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {"Status": "Updated"}, bucket_name)
+                      
+                  elif request_type == 'Delete':
+                      log.info("Deleting index %s from %s", index_name, bucket_name)
+                      try:
+                          client.delete_index(vectorBucketName=bucket_name, indexName=index_name)
+                      except Exception as e:
+                          log.warning("Delete index failed: %s", e)
+                      
+                      log.info("Deleting vector bucket %s", bucket_name)
+                      try:
+                          client.delete_vector_bucket(vectorBucketName=bucket_name)
+                      except Exception as e:
+                          log.warning("Delete bucket failed: %s", e)
+                          
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {"Status": "Deleted"}, bucket_name)
+                      
+              except Exception as e:
+                  log.error("Failed: %s", str(e))
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {"Message": str(e)}, bucket_name)
+
+  # -------------------------------------------------------------------------
+  # 4. S3 Vectors Provisioning Resource
+  # -------------------------------------------------------------------------
+  S3VectorsInfrastructure:
+    Type: Custom::S3Vectors
+    Properties:
+      ServiceToken: !GetAtt S3VectorsProvisionerFunction.Arn
+      VectorBucketName: !Ref VectorBucketName
+      VectorIndexName: !Ref VectorIndexName
+      VectorDimension: !Ref VectorDimension
+
+Outputs:
+  DynamoTableName:
+    Description: "DynamoDB Semantic Memory Table Name"
+    Value: !Ref SemanticMemoryTable
+  VectorBucketName:
+    Description: "S3 Vectors Bucket Name"
+    Value: !Ref VectorBucketName
+  VectorIndexName:
+    Description: "S3 Vectors Index Name"
+    Value: !Ref VectorIndexName

@@ -99,3 +99,31 @@ class ActionResult(BaseModel):
     key: str
     status: Literal["VERIFIED", "VERIFIED_NO_ACTION", "PENDING_APPROVAL", "BLOCKED", "FAILED"]
     message: str
+
+class SemanticMemoryRecord(BaseModel):
+    """Persistent semantic memory metadata for a document."""
+    s3_uri: str
+    bucket: str
+    key: str
+    content_hash: Optional[str] = None
+    etag: str
+    size_bytes: int
+    category: str
+    sensitivity: str
+    importance_score: float
+    analysis_timestamp: datetime
+    embedding_model: str
+    vector_id: str
+    recommended_action: str = "retain"  # Cached to faithfully reconstruct analysis on cache hits
+
+class Embedding(BaseModel):
+    """Domain model for a vector embedding."""
+    vector_id: str
+    vector: List[float]
+    metadata: dict = Field(default_factory=dict)
+
+class SemanticMatch(BaseModel):
+    """A matched document from a semantic vector search."""
+    vector_id: str
+    similarity_score: float
+    metadata: dict
