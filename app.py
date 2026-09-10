@@ -41,9 +41,18 @@ st.sidebar.markdown("S3 Vectors &nbsp;&nbsp;&nbsp; ✅ Connected")
 st.sidebar.markdown("Comprehend &nbsp;&nbsp;&nbsp; ✅ Connected")
 st.sidebar.markdown("")
 st.sidebar.markdown("**LLM Provider**")
-st.sidebar.markdown("External fallback &nbsp;&nbsp;&nbsp; ⚠️ Active")
+st.sidebar.markdown("External fallback &nbsp;&nbsp;&nbsp; 🌐 Active")
 st.sidebar.markdown("AWS Bedrock &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ⚠️ Account restricted")
 st.sidebar.markdown("SageMaker &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ⚠️ Endpoint quota unavailable")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Fallback API Keys**")
+external_key = st.sidebar.text_input("Gemini/External API Key", type="password", value=os.environ.get("SMS_EXTERNAL_API_KEY", ""))
+if external_key:
+    os.environ["SMS_EXTERNAL_API_KEY"] = external_key
+    os.environ["GEMINI_API_KEY"] = external_key
+else:
+    st.sidebar.warning("Please enter your Gemini API key to run analysis.")
 
 st.sidebar.info("The agent architecture supports native AWS model providers through Strands. During this submission, the AWS account's model-inference quotas prevented live Bedrock/SageMaker inference, so the semantic-analysis provider is explicitly disclosed rather than silently simulated. The governance, enrichment, persistence, vector memory, and action layers remain AWS-native.")
 
