@@ -105,6 +105,11 @@ class SMSAgent:
 
             data = json.loads(clean_text.strip())
 
+            # The model requires 'retain', 'archive', 'review', or 'delete'.
+            # Ensure case-insensitivity from the LLM.
+            if "recommended_action" in data and isinstance(data["recommended_action"], str):
+                data["recommended_action"] = data["recommended_action"].lower()
+
             # Ensure the key matches the requested file
             data["key"] = file_key
 
