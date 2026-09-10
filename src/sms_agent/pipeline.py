@@ -99,6 +99,7 @@ class SMSPipeline:
         self.s3_client = s3_client
 
         # Domain layers
+        from .comprehend import ComprehendAnalyzer
         self.inventory = S3InventoryCollector(bucket_name, s3_client=s3_client)
         self.reader = S3ContentReader(s3_client=s3_client)
         self.agent = SMSAgent()
@@ -106,6 +107,7 @@ class SMSPipeline:
         self.relationship_analyzer = RelationshipAnalyzer(vector_store=vector_store)
         self.policy = PolicyEngine()
         self.action_engine = ActionEngine(s3_client=s3_client)
+        self.comprehend = ComprehendAnalyzer()
 
         # Memory layer (optional — may be None when AWS resources aren't provisioned)
         self.memory_store = memory_store
@@ -287,12 +289,28 @@ class SMSPipeline:
             }
 
         # 6. Semantic Analysis (with idempotency)
+        enrichment = None
         if need_analysis:
             analysis = self.agent.analyze_file(
                 file_key=file_key,
                 content=content.content,
                 metadata=metadata_dict,
             )
+            
+            # Comprehend Enrichment
+            enrichment = self.comprehend.analyze_text(content.content)
+            
+            has_pii = bool(enrichment.get("pii_entities"))
+            has_person = any(ent.get("type") == "PERSON" for ent in enrichment.get("entities", []))
+            
+            if has_pii:
+                # Bump sensitivity if explicit PII detected
+                if analysis.sensitivity in ["public", "internal"]:
+                    analysis.sensitivity = "confidential"
+                analysis.reasoning += " [Comprehend Enrichment: Explicit PII detected, increased sensitivity.]"
+            elif has_person:
+                # Add evidence without escalating sensitivity artificially
+                analysis.reasoning += " [Comprehend Enrichment: PERSON entities detected.]"
         else:
             # Reuse cached analysis values — avoid expensive LLM call.
             # recommended_action is read from the persisted record so the
@@ -386,6 +404,7 @@ class SMSPipeline:
             "metadata": metadata_dict,
             "relationships": relationships_list,
             "analysis": analysis.model_dump(mode="json"),
+            "enrichment": enrichment,
             "importance": importance.model_dump(mode="json"),
             "decision": decision.model_dump(mode="json"),
             "action_request": action_req.model_dump(mode="json"),

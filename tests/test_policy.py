@@ -14,15 +14,16 @@ def test_important_file_keep():
     decision = engine.evaluate(important_plan_analysis, important_plan_meta)
     
     assert decision.action == "KEEP"
-    assert decision.risk == "MEDIUM"  # Internal + high importance bumps risk slightly
+    assert decision.risk == "LOW"  # Internal is LOW risk, importance no longer promotes it
     assert "High importance score (0.9)" in decision.reasons[1]
 
-def test_sensitive_file_keep():
+def test_sensitive_file_review():
     engine = PolicyEngine()
     decision = engine.evaluate(sensitive_analysis, sensitive_meta)
     
-    assert decision.action == "KEEP"
+    assert decision.action == "REVIEW"
     assert decision.risk == "HIGH"
+    assert decision.requires_human_approval is True
     assert "restricted" in decision.reasons[0]
 
 def test_old_log_archive():
@@ -63,6 +64,7 @@ def test_high_sensitivity_cannot_be_trashed():
     
     decision = engine.evaluate(bad_analysis, trash_meta)
     
-    # Engine should override the analysis and KEEP it due to restricted sensitivity risk level
-    assert decision.action == "KEEP"
+    # Engine should override the analysis and require REVIEW due to restricted sensitivity risk level
+    assert decision.action == "REVIEW"
     assert decision.risk == "HIGH"
+    assert decision.requires_human_approval is True

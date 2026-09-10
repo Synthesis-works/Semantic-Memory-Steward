@@ -1,51 +1,244 @@
 # Semantic Memory Steward (SMS)
 
-Semantic Memory Steward is a data-governance agent that observes, understands, scores, and relates files to recommend safe actions or require human approval.
+> **AWS Hackathon Submission** — Built with [Strands Agents SDK](https://strandsagents.com/)
 
-## Current MVP Status
+Semantic Memory Steward is a data-governance agent that transforms passive S3 storage into an **active, semantic memory system**. It scans documents, understands their meaning using a Strands-orchestrated LLM, enriches classifications with real-time AWS Comprehend signals, scores their importance, detects relationships and duplicates, and applies a deterministic safety policy — halting autonomy and requiring human approval whenever risk is high.
 
-This is the Day 1 MVP, featuring:
-1. **Semantic Analysis:** A Strands Agent for understanding synthetic files. *(Note: Bedrock integration is currently blocked by an AWS account verification hold)*
-2. **Policy Engine:** A deterministic offline rules engine to evaluate semantic results and recommend safe actions (KEEP, ARCHIVE, REVIEW, TRASH).
-3. **Observe Layer (S3 Inventory):** A live AWS S3 inventory scanner that maps real S3 objects to deterministic FileMetadata compatible with the Policy Engine.
-4. **Observe Layer (S3 Content):** A live AWS S3 content reader that securely fetches and decodes text objects (max 100KB) to prepare for semantic analysis.
+---
 
-**Security and Cost Guardrails:**
-- **Bedrock Integration:** The SMS `agent.py` uses the Strands SDK to connect directly to Amazon Bedrock (default: `amazon.nova-micro-v1:0` in `us-east-1`). *Current Status: Bedrock inference is failing with an account-level `Operation not allowed` restriction (AWS Support Case #178868592800270). The offline domain architecture remains fully testable without it.*
-- **S3 Usage:** Connects to a dedicated development bucket containing ONLY synthetic fictional files.
-- **No Heavy AWS Resources:** Running this codebase does NOT create heavy AWS infrastructure (DynamoDB, Lambda, etc.).
-- **Credentials:** AWS Credentials must ALWAYS come from the configured AWS CLI/profile or environment variables. **Never hardcode credentials in source code.**
-- **Synthetic Data Only:** The MVP is designed to test with synthetic, non-sensitive data only.
-- **Safe Actions:** Risky or destructive actions must eventually require human approval.
+## What SMS Does
 
-## Running Locally
+Traditional storage systems know a file's **name, size, and date**. SMS knows what a file **means**.
 
-1. Create a virtual environment and install dependencies:
-   ```bash
-   python -m venv .venv
-   .venv\Scripts\activate
-   pip install -e .[dev]
-   ```
-2. Run the offline Day 1 demo (runs entirely locally, NO Bedrock calls are made):
-   ```bash
-   python -m src.sms_agent
-   ```
-3. Run the S3 Observation layer against your configured bucket:
-   ```bash
-   # Set SMS_S3_BUCKET environment variable to your development bucket first
-   python -m src.sms_agent s3-inventory
-   ```
-4. Read an object's content safely from S3:
-   ```bash
-   python -m src.sms_agent s3-read demo/project-plan.txt
-   ```
-5. Test the End-to-End Orchestration (Stops before Bedrock inference):
-   ```bash
-   python -m src.sms_agent pipeline demo/project-plan.txt
-   ```
+```
+S3 documents
+     ↓
+SMS scans & reads content (AWS-native)
+     ↓
+Strands Agent → semantic classification
+     ↓
+Amazon Comprehend → entity & PII enrichment
+     ↓
+Importance scoring + relationship detection
+     ↓
+Policy Engine (deterministic safety)
+     ↓
+┌──────────┬────────────┬──────────┐
+│   KEEP   │   ARCHIVE  │  REVIEW  │
+└──────────┴─────┬──────┴──────────┘
+                 ↓
+         Human Approval UI
+                 ↓
+          Action Engine (AWS-native)
+```
 
-## Running Tests
+---
+
+## Why Strands?
+
+Strands Agents provides a **clean model-provider boundary** — the same SMS pipeline can route to AWS Bedrock, Amazon SageMaker, or an external provider, simply by changing configuration. This means:
+
+- The governance, enrichment, and persistence layers are **independent of the model**.
+- Structured output (`SemanticAnalysisResult`) is enforced at the Strands boundary, preventing hallucinated decisions from reaching the action layer.
+- The policy engine is fully **deterministic** — the LLM supplies semantic understanding, but it cannot override safety rules.
+
+---
+
+## Architecture
+
+See [`docs/architecture.md`](docs/architecture.md) for the full Mermaid diagram and data flow.
+
+### AWS-Native Components (Verified Live)
+
+| Component | Service | Purpose |
+|-----------|---------|---------|
+| Inventory | Amazon S3 | List objects and metadata |
+| Content Reader | Amazon S3 | Fetch and decode text content |
+| Entity/PII Enrichment | Amazon Comprehend | `detect_entities` + `detect_pii_entities` |
+| Semantic Memory | Amazon DynamoDB | Persist per-document classification metadata |
+| Vector Memory | Amazon S3 Vectors | 768-dim cosine index for semantic similarity search |
+| Action Engine | Amazon S3 | Copy-then-verify-then-delete for quarantine actions |
+| Infrastructure | AWS SAM / CloudFormation | DynamoDB table + S3 Vectors provisioning |
+
+### LLM Provider Status
+
+> ⚠️ **Disclosure:** SMS natively supports **AWS Bedrock** and **Amazon SageMaker** as model providers through Strands. During this submission, the AWS account has two active restrictions:
+>
+> - **Bedrock:** `ValidationException: Operation not allowed` (account-level restriction)
+> - **SageMaker:** Service Quota of 0 GPU instances for endpoint usage in `us-east-1`
+>
+> Semantic analysis currently uses an **external LLM fallback**, explicitly disclosed in the dashboard System Status panel. All data persistence, enrichment, vector memory, and governance layers remain fully AWS-native.
+
+---
+
+## Safety & Human Approval Model
+
+SMS is built around the principle that **autonomy should be bounded by risk**:
+
+- **KEEP** — No mutation. File stays as-is.
+- **ARCHIVE** — Autonomous. Low-risk transition for stale, low-importance content.
+- **REVIEW** — **Autonomy halts.** The Streamlit dashboard surfaces the document, the semantic reasoning, and the Comprehend signals. A human operator must explicitly select `KEEP` or `QUARANTINE` and confirm before the ActionEngine executes anything.
+- **TRASH → QUARANTINE** — Copy-then-verify-then-delete to `trash/` prefix. Requires human approval for any high-sensitivity document.
+
+Critically: **the ActionEngine hard-blocks** any unapproved destructive action, regardless of what the LLM recommended.
+
+---
+
+## Project Structure
+
+```
+SMS/
+├── app.py                    # Streamlit dashboard (run this for the demo)
+├── template.yaml             # AWS SAM infrastructure (DynamoDB + S3 Vectors)
+├── pyproject.toml            # Project metadata and dependencies
+├── .env.example              # Environment variable template
+├── src/sms_agent/
+│   ├── agent.py              # SMSAgent — Strands wrapper, structured output enforcement
+│   ├── pipeline.py           # SMSPipeline — full orchestration with idempotency
+│   ├── comprehend.py         # Amazon Comprehend enrichment (PERSON ≠ PII)
+│   ├── policy.py             # Deterministic PolicyEngine
+│   ├── actions.py            # ActionEngine with copy-verify-delete safety
+│   ├── authorization.py      # ActionAuthorizer — approval boundary
+│   ├── importance.py         # Deterministic importance scoring
+│   ├── relationships.py      # Hash/ETag + semantic vector relationship detection
+│   ├── memory.py             # DynamoDB + S3 Vectors persistence
+│   ├── embeddings.py         # Embedding providers (Gemini, Bedrock)
+│   ├── s3_inventory.py       # S3 object inventory
+│   ├── s3_content.py         # S3 content reader
+│   └── models.py             # Pydantic domain models
+├── tests/                    # 158 tests, 100% passing
+├── evaluation/               # Offline governance evaluation harness
+│   ├── runner.py             # Evaluator (offline + live modes)
+│   └── fixtures.py           # 5 test cases covering all policy branches
+├── docs/
+│   ├── architecture.md       # Architecture diagram (Mermaid)
+│   └── demo-scenario.md      # Demo narrative
+└── scripts/experiments/      # Historical AWS investigation scripts (not production)
+```
+
+---
+
+## Setup
+
+### Prerequisites
+
+- Python 3.9+
+- AWS CLI configured with a profile that has access to S3, DynamoDB, Comprehend, and S3 Vectors
+- An S3 bucket with demo documents (see below)
+- DynamoDB table: `sms-semantic-memory`
+- S3 Vectors bucket + index (provisioned via SAM template or manually)
+
+### Installation
+
+```bash
+# 1. Clone and set up virtual environment
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # Linux/macOS
+
+# 2. Install the package and dev dependencies
+pip install -e ".[dev]"
+
+# 3. Install dashboard dependency
+pip install streamlit
+
+# 4. Configure environment
+copy .env.example .env
+# Edit .env with your bucket name, DynamoDB table, S3 Vectors details, and AWS profile
+```
+
+### Environment Variables (`.env`)
+
+```bash
+SMS_S3_BUCKET=your-bucket-name
+SMS_DYNAMO_TABLE=sms-semantic-memory
+SMS_VECTOR_BUCKET=your-vectors-bucket
+SMS_VECTOR_INDEX=sms-embeddings
+AWS_PROFILE=your-profile
+AWS_DEFAULT_REGION=us-east-1
+
+# LLM provider (external fallback — see disclosure above)
+SMS_LLM_PROVIDER=gemini
+GEMINI_API_KEY=your-key-here
+```
+
+---
+
+## Running the Tests
 
 ```bash
 pytest
+```
+
+158 tests covering: pipeline idempotency, policy invariants, relationship detection, authorization boundaries, Comprehend enrichment logic, DynamoDB/S3 Vectors persistence, action engine safety, and human approval boundary.
+
+---
+
+## Running the Streamlit Dashboard
+
+```bash
+# Authenticate with AWS first
+aws login --profile your-profile
+
+# Launch the dashboard
+streamlit run app.py
+```
+
+The dashboard will open in your browser at `http://localhost:8501`.
+
+---
+
+## Demo Walkthrough (4 Documents)
+
+The bucket's `demo/` prefix contains four synthetic documents that exercise every policy branch:
+
+| Document | What SMS Detects | Policy Decision | Why |
+|----------|-----------------|----------------|-----|
+| `project-plan.txt` | `internal` sensitivity, high importance | **KEEP** | Important internal asset, no risk signals |
+| `old-project-log.txt` | `internal` sensitivity, low importance | **ARCHIVE** | Stale, low-value history |
+| `employee-contacts.txt` | `confidential`, PERSON entities detected by Comprehend | **REVIEW** | Sensitive HR content, human approval required |
+| `financial-report.txt` | `restricted` sensitivity | **REVIEW** | High-risk financial data, human approval required |
+
+### Demo Steps
+
+1. **Open the dashboard** — `streamlit run app.py`
+2. **Observe the System Status panel** in the sidebar — AWS component health, honest LLM provider disclosure
+3. **Click "▶ Run Full SMS Scan"** — watch each document flow through the pipeline
+4. **Click on `employee-contacts.txt`** in the document table — inspect the Document Inspector:
+   - AWS Comprehend signals: `Entities: PERSON` and `PII detected: no/yes`
+   - Semantic reasoning from the LLM
+   - Policy decision: `REVIEW`
+5. **Trigger the Approval Queue** — the UI blocks autonomous execution with a red alert
+6. **Select `QUARANTINE` → Confirm** — observe the ActionEngine copy-then-delete to `trash/demo/employee-contacts.txt`
+7. **Run the scan again** — verify the document no longer appears in the main prefix
+
+---
+
+## Evaluation Harness
+
+SMS includes an offline evaluation suite that tests governance invariants without requiring a live LLM:
+
+```bash
+cd evaluation
+python runner.py
+```
+
+This runs 5 evaluation cases covering all policy branches and verifies:
+- Human approval invariant (REVIEW always requires approval)
+- Destructive action safety (no autonomous deletion of sensitive content)
+- Relationship detection accuracy
+- Policy action correctness
+
+---
+
+## Infrastructure
+
+The SAM template (`template.yaml`) provisions:
+- **DynamoDB table** (`sms-semantic-memory`) — semantic metadata store
+- **S3 Vectors bucket + index** — 768-dimensional cosine similarity index for semantic relationship search
+
+To deploy infrastructure:
+```bash
+sam build
+sam deploy --guided
 ```

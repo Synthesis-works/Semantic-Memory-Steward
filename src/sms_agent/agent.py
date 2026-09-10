@@ -55,6 +55,35 @@ class SMSAgent:
 
         provider = os.getenv("SMS_LLM_PROVIDER", "bedrock").lower()
 
+        if provider == "bedrock":
+            # Normal Strands/Bedrock execution
+            try:
+                result = self.agent.structured_output(SemanticAnalysisResult, prompt)
+                result.key = file_key  # Ensure key matches
+                return result
+            except Exception as e:
+                raise ValueError(f"Bedrock/Strands inference failed: {e}")
+        elif provider == "sagemaker":
+            # Native Strands/SageMaker execution
+            from strands.models.sagemaker import SageMakerAIModel
+            endpoint_name = os.getenv("SMS_SAGEMAKER_ENDPOINT")
+            if not endpoint_name:
+                raise ValueError("SMS_SAGEMAKER_ENDPOINT environment variable must be set for sagemaker provider.")
+            
+            sagemaker_model = SageMakerAIModel(
+                endpoint_config={'endpoint_name': endpoint_name, 'region_name': 'us-east-1'},
+                payload_config={'max_tokens': 2048, 'temperature': 0.1}
+            )
+            # Reconfigure the agent to use this specific model for this request
+            self.agent.model = sagemaker_model
+            try:
+                result = self.agent.structured_output(SemanticAnalysisResult, prompt)
+                result.key = file_key
+                return result
+            except Exception as e:
+                raise ValueError(f"SageMaker/Strands inference failed: {e}")
+                
+        # Fallback manual parsing for other external test providers
         if provider == "gemini":
             response_text = self._call_gemini(prompt)
         elif provider == "groq":
@@ -64,11 +93,9 @@ class SMSAgent:
         elif provider == "nvidia":
             response_text = self._call_nvidia(prompt)
         else:
-            # Normal Strands/Bedrock execution
-            response = self.agent(prompt)
-            response_text = str(response)
+            raise ValueError(f"Unsupported provider: {provider}")
 
-        # Parse the JSON response into our Pydantic model
+        # Parse the JSON response into our Pydantic model for non-Strands providers
         try:
             clean_text = response_text.strip()
             if clean_text.startswith("```json"):

@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 *.class
 .env
@@ -14,3 +14,7 @@ venv.bak/
 *.egg-info/
 layer/
 packaged.yaml
+# Experiment output artifacts
+*.json
+!pyproject.toml
+scripts/experiments/__pycache__/

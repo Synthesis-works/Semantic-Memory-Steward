@@ -25,8 +25,6 @@ class PolicyEngine:
             reasons.append("File is public/non-sensitive.")
             
         if analysis.importance_score >= 0.8:
-            if risk == "LOW":
-                risk = "MEDIUM"
             reasons.append(f"High importance score ({analysis.importance_score}).")
             
         # 2. Determine Action
@@ -43,10 +41,15 @@ class PolicyEngine:
             reasons.append("File is flagged as a potential duplicate.")
             requires_approval = True
             
-        # Rule: High importance or sensitive -> KEEP (or REVIEW if we want to be cautious)
-        elif risk == "HIGH" or analysis.importance_score >= 0.8:
+        # Rule: High risk/sensitivity needs human review to determine handling
+        elif risk in ["HIGH", "MEDIUM"]:
+            action = "REVIEW"
+            reasons.append("File is sensitive and requires human review.")
+            
+        # Rule: High importance (but low risk) should be kept active
+        elif analysis.importance_score >= 0.8:
             action = "KEEP"
-            reasons.append("Retaining due to high risk or high importance.")
+            reasons.append("Retaining active status due to high importance.")
             
         # Rule: TRASH logic - only if very low importance and public
         elif analysis.importance_score <= 0.2 and analysis.sensitivity == "public":

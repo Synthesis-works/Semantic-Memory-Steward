@@ -14,5 +14,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "python-dotenv"
+    "python-dotenv",
+    "streamlit"
 ]

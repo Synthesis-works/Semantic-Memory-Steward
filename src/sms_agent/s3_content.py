@@ -38,8 +38,11 @@ class S3ContentReader:
         try:
             response = self.s3.get_object(Bucket=metadata.bucket, Key=metadata.key)
             body = response['Body'].read()
-            # Decode carefully
-            text_content = body.decode('utf-8', errors='replace')
+            # Decode carefully (handle UTF-16 BOM if present)
+            if body.startswith(b'\xff\xfe') or body.startswith(b'\xfe\xff'):
+                text_content = body.decode('utf-16', errors='replace')
+            else:
+                text_content = body.decode('utf-8', errors='replace')
             content_type = response.get('ContentType', 'text/plain')
             
             return RetrievedContent(
