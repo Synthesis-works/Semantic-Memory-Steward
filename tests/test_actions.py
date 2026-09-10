@@ -135,3 +135,71 @@ def test_quarantine_rejects_unsafe_keys(mock_s3):
         res = engine.execute(req)
         assert res.status == "FAILED"
         mock_s3.copy_object.assert_not_called()
+def test_authorized_archive_success(mock_s3):
+    engine = ActionEngine(s3_client=mock_s3)
+    
+    state = {'archive/folder/k': False, 'folder/k': True}
+    def head_mock(Bucket, Key):
+        if not state.get(Key, False):
+            raise ClientError({'Error': {'Code': '404'}}, 'HeadObject')
+            
+    def copy_mock(CopySource, Bucket, Key):
+        state[Key] = True
+        
+    def delete_mock(Bucket, Key):
+        state[Key] = False
+        
+    mock_s3.head_object.side_effect = head_mock
+    mock_s3.copy_object.side_effect = copy_mock
+    mock_s3.delete_object.side_effect = delete_mock
+    
+    req = ActionRequest(s3_uri="s3://b/folder/k", bucket="b", key="folder/k", requested_action="ARCHIVE", reason="", risk="LOW", human_approved=False)
+    res = engine.execute(req)
+    assert res.status == "VERIFIED"
+    assert res.action == "ARCHIVE"
+    assert "archive/folder/k" in res.message
+    mock_s3.copy_object.assert_called_once()
+def test_delete_failure_produces_failed_result(mock_s3):
+    engine = ActionEngine(s3_client=mock_s3)
+    state = {'trash/k': False, 'k': True}
+    def head_mock(Bucket, Key):
+        if not state.get(Key, False):
+            raise ClientError({'Error': {'Code': '404'}}, 'HeadObject')
+            
+    def copy_mock(CopySource, Bucket, Key):
+        state[Key] = True
+        
+    def delete_mock(Bucket, Key):
+        raise Exception("S3 Delete Error")
+            
+    mock_s3.head_object.side_effect = head_mock
+    mock_s3.copy_object.side_effect = copy_mock
+    mock_s3.delete_object.side_effect = delete_mock
+    
+    req = ActionRequest(s3_uri="s3://b/k", bucket="b", key="k", requested_action="QUARANTINE", reason="", risk="MEDIUM", human_approved=True)
+    res = engine.execute(req)
+    assert res.status == "FAILED"
+    assert "S3 Delete Error" in res.message
+
+def test_source_remains_produces_failed_result(mock_s3):
+    engine = ActionEngine(s3_client=mock_s3)
+    state = {'trash/k': False, 'k': True}
+    def head_mock(Bucket, Key):
+        if not state.get(Key, False):
+            raise ClientError({'Error': {'Code': '404'}}, 'HeadObject')
+            
+    def copy_mock(CopySource, Bucket, Key):
+        state[Key] = True
+        
+    def delete_mock(Bucket, Key):
+        # Suppose delete "succeeds" but actually the object remains
+        pass
+            
+    mock_s3.head_object.side_effect = head_mock
+    mock_s3.copy_object.side_effect = copy_mock
+    mock_s3.delete_object.side_effect = delete_mock
+    
+    req = ActionRequest(s3_uri="s3://b/k", bucket="b", key="k", requested_action="QUARANTINE", reason="", risk="MEDIUM", human_approved=True)
+    res = engine.execute(req)
+    assert res.status == "FAILED"
+    assert "Source object was not removed" in res.message

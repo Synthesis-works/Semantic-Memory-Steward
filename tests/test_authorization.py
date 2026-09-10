@@ -38,3 +38,12 @@ def test_high_risk_cannot_bypass():
     req = ActionRequest(s3_uri="s3://b/k", bucket="b", key="k", requested_action="QUARANTINE", reason="", risk="HIGH", execution_mode=ExecutionMode.AUTONOMOUS, human_approved=False)
     auth = ActionAuthorizer()
     assert auth.validate(req) == "BLOCKED"
+def test_autonomous_low_risk_archive_is_authorized():
+    req = ActionRequest(s3_uri="s3://b/k", bucket="b", key="k", requested_action="ARCHIVE", reason="", risk="LOW", execution_mode=ExecutionMode.AUTONOMOUS, human_approved=False)
+    auth = ActionAuthorizer()
+    assert auth.validate(req) == "AUTHORIZED"
+
+def test_autonomous_low_risk_quarantine_is_blocked():
+    req = ActionRequest(s3_uri="s3://b/k", bucket="b", key="k", requested_action="QUARANTINE", reason="", risk="LOW", execution_mode=ExecutionMode.AUTONOMOUS, human_approved=False)
+    auth = ActionAuthorizer()
+    assert auth.validate(req) == "BLOCKED"

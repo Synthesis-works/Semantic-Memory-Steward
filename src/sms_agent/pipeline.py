@@ -349,7 +349,7 @@ class SMSPipeline:
 
         # 9. Importance + Policy
         importance = self.scorer.score(metadata, analysis, relationships)
-        decision = self.policy.evaluate(analysis, metadata)
+        decision = self.policy.evaluate(analysis, metadata, relationships)
 
         # 10. Persist memory (HIGH-3 ordering: vector first, then metadata)
         persisted = False

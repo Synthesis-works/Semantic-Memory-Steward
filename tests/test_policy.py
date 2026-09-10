@@ -68,3 +68,21 @@ def test_high_sensitivity_cannot_be_trashed():
     assert decision.action == "REVIEW"
     assert decision.risk == "HIGH"
     assert decision.requires_human_approval is True
+def test_duplicate_file_review():
+    from sms_agent.models import RelationshipResult
+    engine = PolicyEngine()
+    
+    relationships = [
+        RelationshipResult(
+            relationship_type="DUPLICATE_CONFIRMED",
+            confidence=0.99,
+            related_object="s3://other-bucket/same.txt",
+            evidence=["exact cryptographic content hash match"]
+        )
+    ]
+    
+    decision = engine.evaluate(old_log_analysis, old_log_meta, relationships=relationships)
+    
+    assert decision.action == "REVIEW"
+    assert decision.requires_human_approval is True
+    assert "potential duplicate" in decision.reasons[1]

@@ -48,7 +48,11 @@ class ActionEngine:
         if request.requested_action == "QUARANTINE":
             return self._execute_quarantine(request)
             
-        # Any other action (like ARCHIVE) not fully implemented yet
+        # ARCHIVE execution
+        if request.requested_action == "ARCHIVE":
+            return self._execute_archive(request)
+            
+        # Any other action not fully implemented yet
         return ActionResult(
             action=request.requested_action,
             key=request.key,
@@ -56,6 +60,108 @@ class ActionEngine:
             message=f"Executor for action {request.requested_action} is not yet implemented."
         )
         
+    def _derive_archive_destination(self, source_key: str) -> str:
+        """Safely derive the archive destination key while retaining directory structure."""
+        if not source_key or source_key.strip() == "":
+            raise ValueError("Source key cannot be empty.")
+            
+        # Reject obvious traversal or malformed paths
+        if ".." in source_key or "//" in source_key or source_key.startswith("/"):
+            raise ValueError("Source key contains unsafe or malformed path characters.")
+            
+        # Do not archive if it's already in archive
+        if source_key.startswith("archive/"):
+            raise ValueError("Source object is already in the archive namespace.")
+            
+        return f"archive/{source_key}"
+
+    def _execute_archive(self, request: ActionRequest) -> ActionResult:
+        """
+        Move a file to an archive prefix safely.
+        Uses a copy-then-verify-then-delete pattern.
+        """
+        bucket = request.bucket
+        source_key = request.key
+        
+        try:
+            dest_key = self._derive_archive_destination(source_key)
+        except ValueError as e:
+            return ActionResult(
+                action="ARCHIVE",
+                key=source_key,
+                status="FAILED",
+                message=str(e)
+            )
+        
+        try:
+            # Idempotency and collision checks
+            dest_exists = self._object_exists(bucket, dest_key)
+            source_exists = self._object_exists(bucket, source_key)
+            
+            if dest_exists and not source_exists:
+                return ActionResult(
+                    action="ARCHIVE",
+                    key=source_key,
+                    status="VERIFIED",
+                    message=f"Object already archived at {dest_key}."
+                )
+                
+            if dest_exists and source_exists:
+                return ActionResult(
+                    action="ARCHIVE",
+                    key=source_key,
+                    status="FAILED",
+                    message=f"Archive destination {dest_key} is already occupied."
+                )
+                
+            if not source_exists and not dest_exists:
+                return ActionResult(
+                    action="ARCHIVE",
+                    key=source_key,
+                    status="FAILED",
+                    message="Source object does not exist."
+                )
+                
+            # 1. Execute copy
+            copy_source = {'Bucket': bucket, 'Key': source_key}
+            self.s3_client.copy_object(CopySource=copy_source, Bucket=bucket, Key=dest_key)
+            
+            # 2. Verify destination
+            if not self._object_exists(bucket, dest_key):
+                return ActionResult(
+                    action="ARCHIVE",
+                    key=source_key,
+                    status="FAILED",
+                    message="Destination verification failed after copy."
+                )
+                
+            # 3. Remove source
+            self.s3_client.delete_object(Bucket=bucket, Key=source_key)
+            
+            # 4. Verify source state
+            if self._object_exists(bucket, source_key):
+                return ActionResult(
+                    action="ARCHIVE",
+                    key=source_key,
+                    status="FAILED",
+                    message="Source object was not removed after copy."
+                )
+                
+            return ActionResult(
+                action="ARCHIVE",
+                key=source_key,
+                status="VERIFIED",
+                message=f"Successfully archived to {dest_key}."
+            )
+            
+        except Exception as e:
+            return ActionResult(
+                action="ARCHIVE",
+                key=source_key,
+                status="FAILED",
+                message=f"Archive execution failed: {str(e)}"
+            )
+
     def _derive_quarantine_destination(self, source_key: str) -> str:
         """Safely derive the quarantine destination key while retaining directory structure."""
         if not source_key or source_key.strip() == "":

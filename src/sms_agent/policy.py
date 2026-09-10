@@ -1,15 +1,23 @@
 from datetime import datetime, timezone
-from typing import List
-from .models import SemanticAnalysisResult, FileMetadata, PolicyDecision
+from typing import List, Optional
+from .models import SemanticAnalysisResult, FileMetadata, PolicyDecision, RelationshipResult
 
 class PolicyEngine:
     """Deterministic policy engine for Semantic Memory Steward."""
     
-    def evaluate(self, analysis: SemanticAnalysisResult, metadata: FileMetadata) -> PolicyDecision:
+    def evaluate(self, analysis: SemanticAnalysisResult, metadata: FileMetadata, relationships: Optional[List[RelationshipResult]] = None) -> PolicyDecision:
         reasons: List[str] = []
         action = "KEEP"
         requires_approval = False
         
+        # Determine if there is strong duplicate evidence
+        is_duplicate = metadata.is_duplicate
+        if relationships:
+            for rel in relationships:
+                if rel.relationship_type in ("DUPLICATE_CONFIRMED", "DUPLICATE_CANDIDATE"):
+                    is_duplicate = True
+                    break
+
         # 1. Determine Risk Level based primarily on sensitivity and importance
         if analysis.sensitivity == "restricted":
             risk = "HIGH"
@@ -36,7 +44,7 @@ class PolicyEngine:
             requires_approval = True
             
         # Rule: Duplicates typically need review unless they are trivial
-        elif metadata.is_duplicate:
+        elif is_duplicate:
             action = "REVIEW"
             reasons.append("File is flagged as a potential duplicate.")
             requires_approval = True

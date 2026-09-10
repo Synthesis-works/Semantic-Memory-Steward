@@ -23,16 +23,19 @@ class ActionAuthorizer:
             
         # QUARANTINE / ARCHIVE (Mutating actions)
         if request.requested_action in ("QUARANTINE", "ARCHIVE"):
+            # Autonomous low-risk cleanup where policy permits it
+            if request.requested_action == "ARCHIVE" and request.risk == "LOW":
+                return "AUTHORIZED"
+
             if request.execution_mode == ExecutionMode.SAFE:
                 # Rule 2: A high-sensitivity/high-risk action must require human approval in SAFE mode.
-                # In SAFE mode, ALL mutating actions currently require approval.
                 if request.human_approved:
                     return "AUTHORIZED"
                 else:
                     return "PENDING_APPROVAL"
             elif request.execution_mode == ExecutionMode.AUTONOMOUS:
-                # Rule 7: High risk/sensitivity requires human approval even in Autonomous? 
-                # For now, block AUTONOMOUS until implemented
+                # High risk/sensitivity requires human approval, but in autonomous mode
+                # we don't have a human, so we must safely block it.
                 return "BLOCKED"
             elif request.execution_mode == ExecutionMode.TURBO:
                 return "BLOCKED"
