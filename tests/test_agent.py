@@ -38,6 +38,58 @@ def test_agent_invalid_json(mock_call):
         with pytest.raises(ValueError, match="Failed to parse agent response"):
             agent.analyze_file("mock-file.txt", "Some content", {})
 
+
+def _mock_gemini_response(mock_urlopen):
+    """Wire a valid Gemini-shaped response into the urlopen mock."""
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps({
+        "candidates": [{
+            "content": {
+                "parts": [{
+                    "text": json.dumps({
+                        "key": "test.txt",
+                        "category": "technical",
+                        "sensitivity": "public",
+                        "importance_score": 0.2,
+                        "confidence": 0.85,
+                        "reasoning": "Mocked Gemini Response",
+                        "recommended_action": "retain"
+                    })
+                }]
+            }
+        }]
+    }).encode('utf-8')
+    mock_response.__enter__.return_value = mock_response
+    mock_urlopen.return_value = mock_response
+
+
+@patch.dict(os.environ, {"SMS_LLM_PROVIDER": "gemini", "SMS_EXTERNAL_API_KEY": "AQ.test-oauth-token"})
+@patch("urllib.request.urlopen")
+def test_gemini_oauth_token_uses_bearer_header(mock_urlopen):
+    """OAuth-style credentials must go in the Authorization header.
+
+    Observed live: sending an AQ.* token as ?key= is rejected with
+    401 ACCESS_TOKEN_TYPE_UNSUPPORTED ("Expected OAuth 2 access token").
+    """
+    _mock_gemini_response(mock_urlopen)
+    agent = SMSAgent()
+    agent.analyze_file("test.txt", "content")
+    req = mock_urlopen.call_args[0][0]
+    assert "key=" not in req.full_url
+    assert req.get_header("Authorization") == "Bearer AQ.test-oauth-token"
+
+
+@patch.dict(os.environ, {"SMS_LLM_PROVIDER": "gemini", "SMS_EXTERNAL_API_KEY": "AIza-test-api-key"})
+@patch("urllib.request.urlopen")
+def test_gemini_api_key_uses_query_param(mock_urlopen):
+    """Classic AIza.* API keys keep using the ?key= transport."""
+    _mock_gemini_response(mock_urlopen)
+    agent = SMSAgent()
+    agent.analyze_file("test.txt", "content")
+    req = mock_urlopen.call_args[0][0]
+    assert "key=AIza-test-api-key" in req.full_url
+    assert req.get_header("Authorization") is None
+
 def test_strands_agent_import():
     """Verify that the real strands Agent can be imported."""
     from strands import Agent
