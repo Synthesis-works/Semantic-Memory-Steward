@@ -16,6 +16,7 @@ from sms_agent.ui_state import (
     derive_status,
     format_action_result,
     get_doc_action,
+    is_workspace_document,
     pending_reviews,
     policy_counts,
     preview_content,
@@ -119,10 +120,15 @@ def render_result_panel(outcome):
 
 
 def build_records(pipeline, inventory):
-    """Build the dashboard table rows from inventory + semantic memory."""
+    """Build the dashboard table rows from inventory + semantic memory.
+
+    Only active workspace documents are listed: managed governance
+    destinations (trash/, archive/) and stale records for objects no
+    longer in S3 never appear as scan results.
+    """
     records = []
     for item in inventory:
-        if not (item.key.startswith("demo/") or item.key.startswith("trash/demo/")):
+        if not is_workspace_document(item.key):
             continue
         s3_uri = f"s3://{pipeline.bucket_name}/{item.key}"
         record = None
@@ -559,6 +565,7 @@ if st.button("▶ Run Full SMS Scan", type="primary", key="sms_run_scan"):
     st.session_state["sms_trace_active"] = True
     st.session_state["sms_scan_done"] = False
     st.rerun()
+st.caption("Scans all current workspace documents.")
 
 if records:
     summary = summarize_workspace(records, last_scan=st.session_state.get("sms_last_scan"))
@@ -582,14 +589,14 @@ render_activity(activity_box)
 if st.session_state.get("sms_scan_requested", False):
     st.session_state["sms_scan_requested"] = False
     scan_rec = get_trace_recorder()
-    demo_items = [i for i in inventory if i.key.startswith("demo/")]
+    workspace_items = [i for i in inventory if is_workspace_document(i.key)]
     scan_rec.succeed("DISCOVERY", "S3 Scanner",
-                     f"Found {len(demo_items)} documents")
+                     f"Found {len(workspace_items)} active workspace document(s)")
     save_trace_recorder(scan_rec)
     render_activity(activity_box)
     scanned, scan_errors, duplicate_hits = 0, [], 0
     scan_start = time.time()
-    for item in demo_items:
+    for item in workspace_items:
         with st.spinner(f"Analyzing {item.key}..."):
             try:
                 out = pipeline.process_object(item.key, skip_inference=False, execute_action=False, trace=scan_rec)

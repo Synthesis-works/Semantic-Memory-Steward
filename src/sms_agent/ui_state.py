@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import altair as alt
 import pandas as pd
 
+import os
+
 #: ActionEngine statuses that mean "the backend verified the outcome".
 SUCCESS_STATUSES = ("VERIFIED", "VERIFIED_NO_ACTION")
 
@@ -106,6 +108,32 @@ def summarize_workspace(
 def pending_reviews(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Rows still waiting on a human decision."""
     return [r for r in rows if r.get("Status") == "PENDING_REVIEW"]
+
+
+_WORKSPACE_PREFIX_ENV = "SMS_WORKSPACE_PREFIX"
+_DEFAULT_WORKSPACE_PREFIX = "demo/"
+_MANAGED_PREFIXES = ("trash/", "archive/")
+
+
+def workspace_prefix() -> str:
+    """Configured active-workspace prefix (defaults to demo/)."""
+    prefix = os.environ.get(_WORKSPACE_PREFIX_ENV, _DEFAULT_WORKSPACE_PREFIX)
+    return prefix if prefix else _DEFAULT_WORKSPACE_PREFIX
+
+
+def is_managed_document(key: str) -> bool:
+    """Governance destinations (trash/, archive/) are never workspace docs."""
+    return bool(key) and key.startswith(_MANAGED_PREFIXES)
+
+
+def is_workspace_document(key: str) -> bool:
+    """An active workspace document: under the workspace prefix and not
+    a managed governance destination. No filenames are hardcoded."""
+    if not key:
+        return False
+    if is_managed_document(key):
+        return False
+    return key.startswith(workspace_prefix())
 
 
 _DOC_ACTIONS = ("KEEP", "QUARANTINE")
