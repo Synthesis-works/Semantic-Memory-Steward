@@ -8,6 +8,9 @@ Streamlit session state and rendering.
 """
 from typing import Any, Dict, List, Optional, Tuple
 
+import altair as alt
+import pandas as pd
+
 #: ActionEngine statuses that mean "the backend verified the outcome".
 SUCCESS_STATUSES = ("VERIFIED", "VERIFIED_NO_ACTION")
 
@@ -104,6 +107,189 @@ def pending_reviews(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Rows still waiting on a human decision."""
     return [r for r in rows if r.get("Status") == "PENDING_REVIEW"]
 
+
+PREVIEW_LIMIT = 2000
+
+
+def preview_content(text: str, limit: int = PREVIEW_LIMIT):
+    """Bound a document preview. Returns (preview, total_chars, truncated)."""
+    total = len(text or "")
+    if total <= limit:
+        return text or "", total, False
+    return (text or "")[:limit], total, True
+
+
+def action_consequences(action: str, key: str) -> List[str]:
+    """Human-readable consequences of approving an action. Real values only."""
+    if action == "QUARANTINE":
+        return [
+            f"Move {key} to the quarantine/trash location.",
+            f"Copy to trash/{key}.",
+            "Verify destination before touching the original.",
+            "Remove original only after verification.",
+            "Record the verified result.",
+        ]
+    return [
+        f"Keep {key} in its current location.",
+        "No S3 file move is required.",
+        "The decision will be recorded in semantic memory.",
+        "The review will be marked as resolved.",
+    ]
+
+
+_POLICY_LABELS = {
+    "retain": "KEEP",
+    "keep": "KEEP",
+    "archive": "ARCHIVE",
+    "review": "REVIEW",
+    "delete": "DELETE",
+    "trash": "TRASH",
+    "quarantine": "QUARANTINE",
+}
+
+
+def policy_counts(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Count policies across current rows (mixed-case normalized)."""
+    counts: Dict[str, int] = {}
+    for row in rows:
+        label = _POLICY_LABELS.get((row.get("Policy") or "").lower(), "OTHER")
+        counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def sensitivity_counts(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Count sensitivities across current rows."""
+    counts: Dict[str, int] = {}
+    for row in rows:
+        value = row.get("Sensitivity") or "unknown"
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def category_counts(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Count categories across current rows."""
+    counts: Dict[str, int] = {}
+    for row in rows:
+        value = row.get("Category") or "unknown"
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def build_review_model(
+    key: str,
+    category: Any,
+    sensitivity: Any,
+    importance: Any,
+    policy: Optional[str],
+    human_decision: Optional[str],
+    analysis_timestamp: Any,
+    size_bytes: Any,
+    content_chars: int,
+    preview: str,
+    enrichment: Optional[Dict[str, Any]],
+    relationships: List[Any],
+) -> Dict[str, Any]:
+    """Assemble everything the deep review view shows, from real values.
+
+    No reasoning/confidence is included: the memory record does not store
+    them, and they must not be invented. Duplicate evidence appears only
+    when real relationship data is passed in.
+    """
+    status = derive_status(policy, key, human_decision)
+    evidence = [
+        f"Classified as {sensitivity}",
+        f"Importance {importance} (category {category})",
+    ]
+    if (policy or "").lower() == "review":
+        evidence.append("Policy requires human approval for this content.")
+    if enrichment is None:
+        evidence.append("AWS Comprehend enrichment unavailable.")
+        enrichment_available = False
+        persons: List[str] = []
+        pii_found = False
+    else:
+        enrichment_available = True
+        entities = enrichment.get("entities", []) or []
+        persons = sorted({ent.get("text", "") for ent in entities
+                          if ent.get("type") == "PERSON" and ent.get("text")})
+        pii_found = bool(enrichment.get("pii_entities"))
+        evidence.append(
+            f"PERSON entities detected: "
+            f"{', '.join(persons) if persons else 'None'}")
+        evidence.append(f"PII: {'detected' if pii_found else 'not detected'}")
+    dupes = []
+    for rel in relationships or []:
+        rel_type = (rel.get("relationship_type", "")
+                    if isinstance(rel, dict) else
+                    getattr(rel, "relationship_type", ""))
+        if rel_type in ("DUPLICATE_CONFIRMED", "DUPLICATE_CANDIDATE"):
+            target = (rel.get("related_object", "")
+                      if isinstance(rel, dict) else
+                      getattr(rel, "related_object", ""))
+            dupes.append(target)
+            evidence.append(f"Duplicate signal: {target}")
+    if human_decision:
+        memory_note = (f"Human decision {human_decision} recorded "
+                       f"in semantic memory.")
+    else:
+        memory_note = ("SMS has retained this document's analysis "
+                       "in semantic memory.")
+    recommendation = build_recommendation(
+        policy=policy, sensitivity=sensitivity, importance=importance,
+        category=category, human_decision=human_decision, key=key)
+    return {
+        "key": key,
+        "category": category,
+        "sensitivity": sensitivity,
+        "importance": importance,
+        "policy": policy,
+        "status": status,
+        "human_decision": human_decision,
+        "last_analyzed": str(analysis_timestamp),
+        "size_bytes": size_bytes,
+        "content_chars": content_chars,
+        "preview": preview,
+        "evidence": evidence,
+        "memory_note": memory_note,
+        "recommendation": recommendation,
+        "enrichment_available": enrichment_available,
+        "persons": persons,
+        "pii_found": pii_found,
+        "relationships": list(relationships or []),
+        "duplicates": dupes,
+    }
+
+
+def render_donut(box, counts: Dict[str, int], title: str) -> bool:
+    """Compact donut from real counts. Returns False when nothing to show."""
+    items = [{"label": label, "value": value}
+             for label, value in counts.items() if value > 0]
+    if not items:
+        return False
+    df = pd.DataFrame(items)
+    chart = alt.Chart(df).mark_arc(innerRadius=45).encode(
+        theta="value",
+        color=alt.Color("label", legend=alt.Legend(title=None)),
+        tooltip=["label", "value"],
+    ).properties(title=title, height=190)
+    box.altair_chart(chart, use_container_width=True)
+    return True
+
+
+def render_category_bars(box, counts: Dict[str, int], title: str) -> bool:
+    """Compact horizontal bars from real counts."""
+    items = [{"label": label, "value": value}
+             for label, value in counts.items() if value > 0]
+    if not items:
+        return False
+    df = pd.DataFrame(items)
+    chart = alt.Chart(df).mark_bar().encode(
+        x=alt.X("value", title="documents"),
+        y=alt.Y("label", title=None, sort="-x"),
+        tooltip=["label", "value"],
+    ).properties(title=title, height=max(120, 40 * len(items)))
+    box.altair_chart(chart, use_container_width=True)
+    return True
 
 def build_recommendation(
     policy: Optional[str],
