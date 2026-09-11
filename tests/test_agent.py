@@ -63,20 +63,20 @@ def _mock_gemini_response(mock_urlopen):
     mock_urlopen.return_value = mock_response
 
 
-@patch.dict(os.environ, {"SMS_LLM_PROVIDER": "gemini", "SMS_EXTERNAL_API_KEY": "AQ.test-oauth-token"})
+@patch.dict(os.environ, {"SMS_LLM_PROVIDER": "gemini", "SMS_EXTERNAL_API_KEY": "AQ.test-new-format-key"})
 @patch("urllib.request.urlopen")
-def test_gemini_oauth_token_uses_bearer_header(mock_urlopen):
-    """OAuth-style credentials must go in the Authorization header.
+def test_gemini_new_format_key_uses_query_param(mock_urlopen):
+    """AQ.*-format AI Studio keys must also use the ?key= transport.
 
-    Observed live: sending an AQ.* token as ?key= is rejected with
-    401 ACCESS_TOKEN_TYPE_UNSUPPORTED ("Expected OAuth 2 access token").
+    Regression: these were briefly misrouted to Bearer (which Google
+    rejects for API keys); verified live that ?key= is correct.
     """
     _mock_gemini_response(mock_urlopen)
     agent = SMSAgent()
     agent.analyze_file("test.txt", "content")
     req = mock_urlopen.call_args[0][0]
-    assert "key=" not in req.full_url
-    assert req.get_header("Authorization") == "Bearer AQ.test-oauth-token"
+    assert "key=AQ.test-new-format-key" in req.full_url
+    assert req.get_header("Authorization") is None
 
 
 @patch.dict(os.environ, {"SMS_LLM_PROVIDER": "gemini", "SMS_EXTERNAL_API_KEY": "AIza-test-api-key"})

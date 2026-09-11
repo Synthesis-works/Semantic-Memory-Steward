@@ -261,16 +261,11 @@ class SMSAgent:
             raise ValueError("SMS_EXTERNAL_API_KEY is not set but provider is gemini.")
 
         model = os.getenv("SMS_EXTERNAL_MODEL", "gemini-3.6-flash")
-        # Classic AIza.* keys travel as ?key=. OAuth-style tokens (e.g. AQ.*)
-        # are rejected that way (401 ACCESS_TOKEN_TYPE_UNSUPPORTED) and must
-        # travel as an Authorization: Bearer header instead.
-        if api_key.startswith("AIza"):
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-            headers = {'Content-Type': 'application/json'}
-        else:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-            headers = {'Content-Type': 'application/json',
-                       'Authorization': f'Bearer {api_key}'}
+        # API keys travel as ?key= regardless of prefix. (AI Studio now
+        # issues AQ.*-format keys; verified live that ?key= is the correct
+        # transport and Bearer is rejected for them.)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        headers = {'Content-Type': 'application/json'}
 
         # We can extract the schema from SemanticAnalysisResult
         # However, Gemini's responseSchema is OpenAPI 3.0, which is very similar to JSON Schema
