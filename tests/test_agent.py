@@ -257,3 +257,38 @@ def test_agent_gemini_missing_key():
     with pytest.raises(ValueError, match="SMS_EXTERNAL_API_KEY is not set"):
         agent.analyze_file("test.txt", "content")
 
+
+def test_translate_strands_tool_use_event():
+    """A real Strands tool-use event becomes a trace event with the tool name."""
+    from sms_agent.agent import translate_strands_event
+    from sms_agent.trace import TraceRecorder
+    rec = TraceRecorder()
+    translate_strands_event(rec, "demo/a.txt",
+                            current_tool_use={"name": "s3_read"})
+    assert len(rec.events) == 1
+    assert rec.events[0].stage == "AI_ANALYSIS"
+    assert "s3_read" in rec.events[0].title
+
+
+def test_translate_strands_ignores_non_tool_events():
+    """Model output/reasoning/lifecycle noise must never enter the trace."""
+    from sms_agent.agent import translate_strands_event
+    from sms_agent.trace import TraceRecorder
+    rec = TraceRecorder()
+    translate_strands_event(rec, "demo/a.txt", data="token stream...")
+    translate_strands_event(rec, "demo/a.txt", reasoningText="private thought")
+    translate_strands_event(rec, "demo/a.txt", current_tool_use={})
+    translate_strands_event(None, "demo/a.txt",
+                            current_tool_use={"name": "x"})
+    assert rec.events == []
+
+
+def test_translate_strands_never_raises():
+    """Tracing must not break inference, whatever the SDK sends."""
+    from sms_agent.agent import translate_strands_event
+    from sms_agent.trace import TraceRecorder
+    rec = TraceRecorder()
+    translate_strands_event(rec, "demo/a.txt", event=None,
+                            current_tool_use="not-a-dict")
+    assert rec.events == []
+

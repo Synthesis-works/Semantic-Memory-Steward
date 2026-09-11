@@ -4,6 +4,36 @@ from pydantic import ValidationError
 from .models import SemanticAnalysisResult
 from strands import Agent
 
+
+def translate_strands_event(trace, document, **kwargs):
+    """Forward a real Strands SDK event into the execution trace.
+
+    Only tool invocations with an identifiable name are recorded (as
+    "Tool invoked: <name>"); model output, reasoning text, and raw
+    payloads are deliberately ignored. Never raises: tracing must not
+    break inference. Active only when a Strands-backed provider executes.
+    """
+    if trace is None:
+        return
+    try:
+        name = None
+        tool_use = kwargs.get("current_tool_use")
+        if isinstance(tool_use, dict):
+            name = tool_use.get("name")
+        if not name:
+            nested = kwargs.get("event", {})
+            if isinstance(nested, dict):
+                tool_use = (nested.get("contentBlockStart", {})
+                            .get("start", {}).get("toolUse"))
+                if isinstance(tool_use, dict):
+                    name = tool_use.get("name")
+        if isinstance(name, str) and name:
+            trace.record("AI_ANALYSIS", f"Tool invoked: {name}",
+                         status="RUNNING", document=document,
+                         event_type="tool_use", metadata={"tool": name})
+    except Exception:
+        pass
+
 class SMSAgent:
     """Semantic Memory Steward Agent."""
 
@@ -32,7 +62,7 @@ class SMSAgent:
             model=self.model_id
         )
 
-    def analyze_file(self, file_key: str, content: str, metadata: dict = None) -> SemanticAnalysisResult:
+    def analyze_file(self, file_key: str, content: str, metadata: dict = None, trace=None) -> SemanticAnalysisResult:
         """
         Analyze a file's content and metadata to produce a structured governance result.
 
@@ -40,6 +70,9 @@ class SMSAgent:
             file_key: The identifier for the file (e.g. S3 key)
             content: The text content of the file
             metadata: Optional dictionary of file metadata (e.g. size, created_at)
+            trace: Optional TraceRecorder. On Strands-backed providers, real
+                SDK tool-use events are forwarded into it. The manual REST
+                fallback emits nothing here (the pipeline owns stage events).
 
         Returns:
             SemanticAnalysisResult: Structured analysis result
@@ -57,12 +90,19 @@ class SMSAgent:
 
         if provider == "bedrock":
             # Normal Strands/Bedrock execution
+            original_handler = self.agent.callback_handler
+            if trace is not None:
+                def _trace_callback(**kwargs):
+                    translate_strands_event(trace, file_key, **kwargs)
+                self.agent.callback_handler = _trace_callback
             try:
                 result = self.agent.structured_output(SemanticAnalysisResult, prompt)
                 result.key = file_key  # Ensure key matches
                 return result
             except Exception as e:
                 raise ValueError(f"Bedrock/Strands inference failed: {e}")
+            finally:
+                self.agent.callback_handler = original_handler
         elif provider == "sagemaker":
             # Native Strands/SageMaker execution
             from strands.models.sagemaker import SageMakerAIModel
@@ -76,12 +116,19 @@ class SMSAgent:
             )
             # Reconfigure the agent to use this specific model for this request
             self.agent.model = sagemaker_model
+            original_handler = self.agent.callback_handler
+            if trace is not None:
+                def _trace_callback(**kwargs):
+                    translate_strands_event(trace, file_key, **kwargs)
+                self.agent.callback_handler = _trace_callback
             try:
                 result = self.agent.structured_output(SemanticAnalysisResult, prompt)
                 result.key = file_key
                 return result
             except Exception as e:
                 raise ValueError(f"SageMaker/Strands inference failed: {e}")
+            finally:
+                self.agent.callback_handler = original_handler
                 
         # Fallback manual parsing for other external test providers
         if provider == "gemini":

@@ -1,4 +1,5 @@
 import os
+import time
 from dotenv import load_dotenv
 import streamlit as st
 import pandas as pd
@@ -6,6 +7,7 @@ from botocore.exceptions import ClientError
 from sms_agent.pipeline import SMSPipeline
 from sms_agent.actions import ActionRequest, ActionEngine
 from sms_agent.memory import DynamoDBMemoryStore
+from sms_agent.trace import TraceRecorder, render_trace_lines
 from sms_agent.ui_state import (
     build_recommendation,
     derive_status,
@@ -39,20 +41,62 @@ def init_pipeline():
 init_pipeline()
 pipeline = st.session_state.get("pipeline")
 
+def get_trace_recorder():
+    """Session-backed recorder: the trace survives reruns until next scan."""
+    data = st.session_state.get("sms_trace_events")
+    return TraceRecorder.from_dicts(data) if data else TraceRecorder()
+
+
+def save_trace_recorder(rec):
+    st.session_state["sms_trace_events"] = rec.to_dicts()
+
+
+def render_activity(box):
+    """Draw the LIVE ACTIVITY panel from session state (every render)."""
+    rec = get_trace_recorder()
+    active = st.session_state.get("sms_trace_active", False)
+    done = st.session_state.get("sms_scan_done", False)
+    if not rec.events and not active and not done:
+        box.empty()
+        return
+    parts = ["### SMS LIVE ACTIVITY"]
+    if active and not rec.events:
+        parts.append("● SMS is working...")
+    parts.extend(render_trace_lines(rec.events))
+    if active:
+        parts.append("● SMS is working...")
+    if done and not active:
+        seconds = st.session_state.get("sms_last_scan_seconds", 0.0)
+        last = st.session_state.get("sms_last_scan") or {}
+        parts.append(
+            f"✓ Scan complete in {seconds:.1f}s — "
+            f"{last.get('analyzed', 0)} analyzed · "
+            f"{last.get('duplicates', 0)} duplicate signals")
+    box.markdown("\n\n".join(parts))
+
+
 def execute_governance_action(pipeline, request, record_keep_s3_uri=None):
     """Execute one governance action and persist the truthful outcome.
 
     The outcome is stored in session state (UI state) so it survives the
     rerun that follows execution; success is recorded only when the backend
     verified it. For KEEP, the human decision is additionally persisted in
-    semantic memory (business state). Always ends with a rerun.
+    semantic memory (business state).     Always ends with a rerun.
     """
+    rec = get_trace_recorder()
+    rec.record("ACTION", f"Approval received — executing {request.requested_action}",
+               status="RUNNING", document=request.key, event_type="started")
+    save_trace_recorder(rec)
     try:
         res = pipeline.action_engine.execute(request)
     except Exception as e:
         res = None
         exec_error = str(e)
     if res is not None and res.status in ("VERIFIED", "VERIFIED_NO_ACTION"):
+        rec = get_trace_recorder()
+        rec.succeed("ACTION", f"{res.action} verified", res.message,
+                    document=res.key, event_type="verified")
+        save_trace_recorder(rec)
         decision_error = None
         if record_keep_s3_uri is not None and pipeline.memory_store is not None:
             try:
@@ -65,17 +109,35 @@ def execute_governance_action(pipeline, request, record_keep_s3_uri=None):
                 "status": "FAILED",
                 "message": f"Action verified but the KEEP decision could not be recorded: {decision_error}",
             }
+            rec = get_trace_recorder()
+            rec.fail("ACTION", "KEEP decision not recorded",
+                     outcome["message"], document=request.key)
+            save_trace_recorder(rec)
         else:
             outcome = {
                 "action": res.action, "key": res.key,
                 "status": res.status, "message": res.message,
             }
     else:
+        status = res.status if res is not None else "FAILED"
+        message = (res.message if res is not None
+                   else f"Execution raised an exception: {exec_error}")
         outcome = {
             "action": request.requested_action, "key": request.key,
-            "status": res.status if res is not None else "FAILED",
-            "message": res.message if res is not None else f"Execution raised an exception: {exec_error}",
+            "status": status, "message": message,
         }
+        rec = get_trace_recorder()
+        if status == "BLOCKED":
+            rec.succeed("ACTION", "Action blocked by safety layer",
+                        message, document=request.key, event_type="blocked")
+        elif status == "PENDING_APPROVAL":
+            rec.wait("ACTION", "Action awaiting approval",
+                     message, document=request.key,
+                     event_type="pending_approval")
+        else:
+            rec.fail("ACTION", f"{request.requested_action} failed",
+                     message, document=request.key)
+        save_trace_recorder(rec)
     st.session_state["sms_last_action"] = outcome
     st.cache_data.clear()
     st.rerun()
@@ -121,24 +183,43 @@ def get_inventory():
 
 inventory = get_inventory()
 
+activity_box = st.empty()
+render_activity(activity_box)
+
 col1, col2 = st.columns([2, 1])
 with col1:
     if st.button("▶ Run Full SMS Scan", type="primary", key="sms_run_scan"):
+        scan_rec = TraceRecorder()
+        save_trace_recorder(scan_rec)
+        st.session_state["sms_trace_active"] = True
+        st.session_state["sms_scan_done"] = False
+        demo_items = [i for i in inventory if i.key.startswith("demo/")]
+        scan_rec.succeed("DISCOVERY", "S3 Scanner",
+                         f"Found {len(demo_items)} documents")
+        save_trace_recorder(scan_rec)
+        render_activity(activity_box)
         scanned, scan_errors, duplicate_hits = 0, [], 0
-        for item in inventory:
-            if not item.key.startswith("demo/"): continue
+        scan_start = time.time()
+        for item in demo_items:
             with st.spinner(f"Analyzing {item.key}..."):
                 try:
-                    out = pipeline.process_object(item.key, skip_inference=False, execute_action=False)
+                    out = pipeline.process_object(item.key, skip_inference=False, execute_action=False, trace=scan_rec)
                     scanned += 1
                     for rel in (out.get("relationships") or []):
                         if rel.get("relationship_type") in ("DUPLICATE_CONFIRMED", "DUPLICATE_CANDIDATE"):
                             duplicate_hits += 1
                 except Exception as e:
                     scan_errors.append(f"{item.key}: {e}")
+            save_trace_recorder(scan_rec)
+            render_activity(activity_box)
         st.session_state["sms_last_scan"] = {
             "analyzed": scanned, "errors": scan_errors, "duplicates": duplicate_hits,
         }
+        st.session_state["sms_last_scan_seconds"] = time.time() - scan_start
+        st.session_state["sms_trace_active"] = False
+        st.session_state["sms_scan_done"] = True
+        save_trace_recorder(scan_rec)
+        render_activity(activity_box)
         st.cache_data.clear()
         st.rerun()
 
