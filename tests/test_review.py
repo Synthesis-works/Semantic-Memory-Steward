@@ -4,13 +4,19 @@ Every assertion pins honesty: the review model mirrors real record
 values, previews are bounded, consequences name real destinations,
 charts count only current rows, and nothing is hardcoded to fixtures.
 """
+import pytest
+
 from sms_agent.ui_state import (
     action_consequences,
     build_review_model,
     category_counts,
+    get_doc_action,
     policy_counts,
     preview_content,
+    result_for_doc,
     sensitivity_counts,
+    set_doc_action,
+    verified_destination,
 )
 
 
@@ -137,3 +143,33 @@ def test_review_helpers_have_no_hardcoded_demo_filenames():
         assert name not in text
     assert "last week" not in text.lower()
     assert "last month" not in text.lower()
+
+
+def test_doc_action_defaults_to_keep_and_validates():
+    assert get_doc_action({}, "demo/a.txt") == "KEEP"
+    assert get_doc_action({"demo/a.txt": "QUARANTINE"},
+                          "demo/a.txt") == "QUARANTINE"
+    assert get_doc_action({"demo/a.txt": "DELETE"},
+                          "demo/a.txt") == "KEEP"
+
+
+def test_set_doc_action_is_canonical_per_document():
+    store = {}
+    set_doc_action(store, "demo/a.txt", "QUARANTINE")
+    set_doc_action(store, "demo/b.txt", "KEEP")
+    assert store == {"demo/a.txt": "QUARANTINE", "demo/b.txt": "KEEP"}
+    with pytest.raises(ValueError):
+        set_doc_action(store, "demo/a.txt", "DELETE")
+
+
+def test_result_for_doc_scopes_results():
+    results = {"demo/a.txt": {"status": "VERIFIED", "action": "KEEP"}}
+    assert result_for_doc(results, "demo/a.txt")["action"] == "KEEP"
+    assert result_for_doc(results, "demo/b.txt") is None
+    assert result_for_doc({}, "demo/a.txt") is None
+
+
+def test_verified_destination_mirrors_engine():
+    assert verified_destination("QUARANTINE", "demo/a.txt") == "trash/demo/a.txt"
+    assert verified_destination("ARCHIVE", "demo/a.txt") == "archive/demo/a.txt"
+    assert verified_destination("KEEP", "demo/a.txt") is None

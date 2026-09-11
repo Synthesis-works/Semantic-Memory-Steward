@@ -256,12 +256,12 @@ def test_archive_recommendation_offers_verified_execute():
     at.selectbox[0].set_value(ARCHIVE_KEY).run(timeout=TIMEOUT)
     assert not at.exception
     labels = [b.label for b in at.button]
-    assert any("ARCHIVE" in label for label in labels), (
+    assert any("Archive" in label for label in labels), (
         "expected an ARCHIVE execute control for a policy-archive document; "
         f"buttons={labels}"
     )
     for button in at.button:
-        if "ARCHIVE" in button.label:
+        if "Archive" in button.label:
             button.click().run(timeout=TIMEOUT)
     assert not at.exception
     assert seen.get("action") == "ARCHIVE"

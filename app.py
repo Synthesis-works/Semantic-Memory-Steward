@@ -15,13 +15,17 @@ from sms_agent.ui_state import (
     category_counts,
     derive_status,
     format_action_result,
+    get_doc_action,
     pending_reviews,
     policy_counts,
     preview_content,
     render_category_bars,
     render_donut,
+    result_for_doc,
     sensitivity_counts,
+    set_doc_action,
     summarize_workspace,
+    verified_destination,
 )
 
 load_dotenv()
@@ -59,19 +63,59 @@ def save_trace_recorder(rec):
     st.session_state["sms_trace_events"] = rec.to_dicts()
 
 
-def render_last_action():
-    """Render the persisted outcome of the last executed action, if any."""
-    last_action = st.session_state.get("sms_last_action")
-    if not last_action:
+def render_last_action_for(doc_key):
+    """Render the action outcome belonging to one document, if any.
+
+    Results are document-scoped: viewing another document never shows
+    this document's outcome.
+    """
+    outcome = result_for_doc(st.session_state.get("sms_action_results"),
+                             doc_key)
+    if not outcome:
         return
     _kind, _text = format_action_result(
-        last_action["action"], last_action["key"],
-        last_action["status"], last_action["message"],
+        outcome["action"], outcome["key"],
+        outcome["status"], outcome["message"],
     )
     if _kind == "success":
         st.success(_text)
     else:
         st.error(_text)
+
+
+def render_result_panel(outcome):
+    """Staged, document-specific result block. Success only on verification."""
+    action = outcome["action"]
+    key = outcome["key"]
+    status = outcome["status"]
+    message = outcome["message"]
+    if status in ("VERIFIED", "VERIFIED_NO_ACTION"):
+        if action == "KEEP":
+            st.success("✓ KEEP CONFIRMED")
+            st.write(f"**{key}** remains in its current location.")
+            st.write("Decision recorded in semantic memory.")
+            st.write("No S3 mutation was required.")
+        else:
+            dest = verified_destination(action, key)
+            st.success(f"✓ {action} VERIFIED")
+            st.write(f"**{key}**")
+            if dest:
+                st.write(f"Moved to:\n`{dest}`")
+            st.write("Destination verified.")
+            st.write("Original verified removed.")
+    elif status == "FAILED":
+        st.error(f"✗ {action} FAILED")
+        st.write(f"**{key}**")
+        st.write(f"The requested {action.lower()} action was not verified.")
+        st.write(message)
+    elif status == "BLOCKED":
+        st.error(f"⛔ {action} BLOCKED")
+        st.write(f"**{key}** — not executed.")
+        st.write(message)
+    else:
+        st.error(f"⏸ {action} PENDING")
+        st.write(f"**{key}** — not executed.")
+        st.write(message)
 
 
 def build_records(pipeline, inventory):
@@ -149,7 +193,8 @@ def execute_governance_action(pipeline, request, record_keep_s3_uri=None):
     semantic memory (business state).     Always ends with a rerun.
     """
     rec = get_trace_recorder()
-    rec.record("ACTION", f"Approval received — executing {request.requested_action}",
+    rec.record("ACTION",
+               f"Approval received — executing {request.requested_action} — {request.key}",
                status="RUNNING", document=request.key, event_type="started")
     save_trace_recorder(rec)
     try:
@@ -204,6 +249,9 @@ def execute_governance_action(pipeline, request, record_keep_s3_uri=None):
                      message, document=request.key)
         save_trace_recorder(rec)
     st.session_state["sms_last_action"] = outcome
+    results = st.session_state.get("sms_action_results") or {}
+    results[request.key] = outcome
+    st.session_state["sms_action_results"] = results
     st.cache_data.clear()
     st.rerun()
 
@@ -212,6 +260,10 @@ def render_action_controls(pipeline, rec, selected_file, prefix):
 
     Shared by the dashboard inspector and the deep review view so both
     offer the identical, truthful action semantics.
+
+    Selection is canonical per document (sms_selected_action): every
+    component below derives from the active document's entry, so stale
+    text from another document or a previous selection is impossible.
     """
     raw = rec["raw_record"]
     if raw.recommended_action.lower() == "review" and not selected_file.startswith("trash/"):
@@ -220,20 +272,29 @@ def render_action_controls(pipeline, rec, selected_file, prefix):
         else:
             st.error("Action Paused: Human Approval Required")
 
-        action_choice = st.radio("Select Governance Action:", ["KEEP", "QUARANTINE"], key=f"{prefix}_action_choice")
+        st.markdown("**YOUR DECISION**")
+        action_map = st.session_state.get("sms_selected_action") or {}
+        default = get_doc_action(action_map, selected_file)
+        action_choice = st.radio("Select the final governance action:",
+                                 ["KEEP", "QUARANTINE"],
+                                 index=["KEEP", "QUARANTINE"].index(default),
+                                 key=f"{prefix}_choice_{selected_file}")
+        set_doc_action(action_map, selected_file, action_choice)
+        st.session_state["sms_selected_action"] = action_map
 
-        st.markdown("**YOU ARE ABOUT TO:**")
-        st.write(f"**{action_choice} {selected_file}**")
+        st.markdown(f"**YOU ARE ABOUT TO {action_choice}**")
+        st.write(f"**{selected_file}**")
         for line in action_consequences(action_choice, selected_file):
             st.write(f"- {line}")
 
         if action_choice == "KEEP":
             button_label = "Confirm Keep — No File Move"
-            spinner_text = "Recording KEEP decision..."
+            spinner_text = f"Recording KEEP decision for {selected_file}..."
         else:
             button_label = "Confirm Quarantine — Move to Trash"
-            spinner_text = "Quarantining document..."
-        if st.button(button_label, key=f"{prefix}_confirm"):
+            spinner_text = (f"Quarantining {selected_file} — copying to "
+                            f"trash/{selected_file}...")
+        if st.button(button_label, key=f"{prefix}_confirm_{selected_file}"):
             with st.spinner(spinner_text):
                 req = ActionRequest(
                     s3_uri=rec["s3_uri"],
@@ -257,9 +318,12 @@ def render_action_controls(pipeline, rec, selected_file, prefix):
             f"- Category {raw.category}\n"
             "- Policy permits ARCHIVE for low-risk documents."
         )
-        st.write(f"SMS will copy to `archive/{selected_file}`, verify the copy, delete the original, and verify removal.")
-        if st.button("Execute ARCHIVE", key=f"{prefix}_execute_archive"):
-            with st.spinner("Archiving..."):
+        st.markdown("**YOU ARE ABOUT TO ARCHIVE**")
+        st.write(f"**{selected_file}**")
+        st.write(f"- Copy to `archive/{selected_file}`, verify the copy, "
+                 "delete the original, and verify removal.")
+        if st.button("Confirm Archive — Move to Archive", key=f"{prefix}_archive_{selected_file}"):
+            with st.spinner(f"Archiving {selected_file} — copying to archive/..."):
                 req = ActionRequest(
                     s3_uri=rec["s3_uri"],
                     bucket=pipeline.bucket_name,
@@ -303,14 +367,31 @@ def render_review_page(pipeline, inventory, records):
             st.session_state["sms_review_key"] = queue_keys[queue_keys.index(key) + 1]
             st.rerun()
 
-    st.header(key)
-    st.write(f"**{status}**")
+    st.markdown("REVIEWING")
+    st.header(f"📄 {key}")
+    st.write(f"**{raw.sensitivity.upper()} · IMPORTANCE {round(raw.importance_score, 2)}"
+             f" · POLICY: {raw.recommended_action.upper()}**")
+    st.write(f"**STATUS: {status.replace('_', ' ')}**")
     if status == "PENDING_REVIEW":
         st.error("REVIEW REQUIRED")
     st.caption(f"Last analyzed: {raw.analysis_timestamp} · "
                f"{raw.size_bytes} bytes · etag {raw.etag}")
 
-    render_last_action()
+    st.markdown("### Other documents")
+    others = [r for r in records
+              if r["Has Memory"] and r["Filename"] != key]
+    if not others:
+        st.caption("No other analyzed documents.")
+    for other in others:
+        ocol1, ocol2 = st.columns([3, 1])
+        ocol1.write(f"**{other['Filename']}** — {other['Category']} · "
+                    f"{other['Sensitivity']} · {other['Status']}")
+        if ocol2.button("Open", key=f"sms_open_{other['Filename']}"):
+            st.session_state["sms_review_key"] = other["Filename"]
+            st.session_state["sms_selected_file"] = other["Filename"]
+            st.rerun()
+
+    render_last_action_for(key)
 
     content_text, content_error = None, None
     try:
@@ -361,7 +442,7 @@ def render_review_page(pipeline, inventory, records):
         for line in model["evidence"]:
             st.write(f"- {line}")
         st.info(model["memory_note"])
-        st.subheader("SMS recommendation")
+        st.markdown("**SMS RECOMMENDATION**")
         st.write(f"**{model['recommendation']['headline']}**")
         for reason in model["recommendation"]["why"]:
             st.write(f"- {reason}")
@@ -413,6 +494,11 @@ def render_review_page(pipeline, inventory, records):
              "current policy. SMS investigated, recommended, and stopped. "
              "You are now making the final governance decision.")
     render_action_controls(pipeline, rec, key, prefix="sms_review")
+
+    outcome = result_for_doc(st.session_state.get("sms_action_results"), key)
+    if outcome:
+        st.markdown("---")
+        render_result_panel(outcome)
 
     trace_events = [e for e in get_trace_recorder().events
                     if e.document == key]
@@ -547,13 +633,15 @@ if records:
         st.markdown("### Needs your attention — SMS paused here because it needs you")
         for row in queue:
             qcol1, qcol2 = st.columns([3, 1])
-            qcol1.write(f"**{row['Filename']}** — policy {row['Policy']}, "
-                        f"sensitivity {row['Sensitivity']}, importance {row['Importance']}")
-            if qcol2.button("Inspect", key=f"sms_inspect_{row['Filename']}"):
+            qcol1.write(f"**{row['Filename']}** — {row['Policy']} · "
+                        f"{row['Sensitivity']} · {row['Importance']}")
+            if qcol2.button("Review", key=f"sms_inspect_{row['Filename']}"):
                 st.session_state["sms_selected_file"] = row["Filename"]
                 st.session_state["sms_review_key"] = row["Filename"]
                 st.session_state["sms_view"] = "review"
                 st.rerun()
+    else:
+        st.success("✓ Nothing needs your attention")
 
     st.markdown("### Recent scan results")
     df = pd.DataFrame(records)
@@ -566,7 +654,7 @@ st.header("Document Inspector & Approval Queue")
 
 selected_file = st.selectbox("Select a file to inspect:", [r["Filename"] for r in records], key="sms_selected_file")
 
-render_last_action()
+render_last_action_for(selected_file)
 
 if selected_file:
     rec = next((r for r in records if r["Filename"] == selected_file), None)

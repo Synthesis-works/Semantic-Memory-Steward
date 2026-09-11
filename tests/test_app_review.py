@@ -109,11 +109,11 @@ def _open_review(execute):
     at.run(timeout=TIMEOUT)
     assert not at.exception, f"initial run crashed: {at.exception}"
     for button in at.button:
-        if button.label == "Inspect":
+        if button.label == "Review":
             button.click().run(timeout=TIMEOUT)
             break
     else:
-        raise AssertionError("no Inspect button for the REVIEW document")
+        raise AssertionError("no Review button for the REVIEW document")
     assert not at.exception
     return at
 

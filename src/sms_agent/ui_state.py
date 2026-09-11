@@ -108,6 +108,46 @@ def pending_reviews(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [r for r in rows if r.get("Status") == "PENDING_REVIEW"]
 
 
+_DOC_ACTIONS = ("KEEP", "QUARANTINE")
+
+
+def get_doc_action(action_map: Optional[Dict[str, str]], key: str,
+                   default: str = "KEEP") -> str:
+    """Canonical selected action for one document (defaults to KEEP)."""
+    action = (action_map or {}).get(key, default)
+    return action if action in _DOC_ACTIONS else default
+
+
+def set_doc_action(action_map: Dict[str, str], key: str,
+                   action: str) -> str:
+    """Record a human's selected action for one document."""
+    if action not in _DOC_ACTIONS:
+        raise ValueError(
+            f"set_doc_action: unsupported action {action!r} "
+            "(only KEEP/QUARANTINE are selectable)")
+    action_map[key] = action
+    return action
+
+
+def result_for_doc(results: Optional[Dict[str, Any]],
+                   key: str) -> Optional[Dict[str, Any]]:
+    """Action outcome belonging to one document, or None."""
+    return (results or {}).get(key)
+
+
+def verified_destination(action: str, key: str) -> Optional[str]:
+    """Destination the ActionEngine verifies moves to.
+
+    Mirrors ActionEngine's derivation (trash/<key>, archive/<key>);
+    KEEP moves nothing, so there is no destination.
+    """
+    if action == "QUARANTINE":
+        return f"trash/{key}"
+    if action == "ARCHIVE":
+        return f"archive/{key}"
+    return None
+
+
 PREVIEW_LIMIT = 2000
 
 
