@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, Literal, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 class SemanticAnalysisResult(BaseModel):
     """Structured result of semantic analysis on a file."""
@@ -22,6 +22,18 @@ class SemanticAnalysisResult(BaseModel):
     recommended_action: Literal["retain", "archive", "review", "delete"] = Field(
         description="The recommended governance action. Destructive actions should require human approval."
     )
+
+    @field_validator("recommended_action", mode="before")
+    @classmethod
+    def _normalize_recommended_action(cls, value):
+        # LLMs and legacy records use varying case ("REVIEW", "Archive").
+        # Normalize centrally so every construction site (Strands
+        # structured output, manual fallback parsing, cache rebuild)
+        # accepts case variants instead of crashing the scan. Unknown
+        # values still fail validation loudly.
+        if isinstance(value, str):
+            return value.lower()
+        return value
 
 class FileMetadata(BaseModel):
     """File metadata from the storage system."""
@@ -115,6 +127,7 @@ class SemanticMemoryRecord(BaseModel):
     embedding_model: str
     vector_id: str
     recommended_action: str = "retain"  # Cached to faithfully reconstruct analysis on cache hits
+    human_decision: Optional[str] = None  # Human review outcome, e.g. "KEEP"; policy output untouched
 
 class Embedding(BaseModel):
     """Domain model for a vector embedding."""

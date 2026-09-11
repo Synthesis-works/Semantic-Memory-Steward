@@ -368,6 +368,9 @@ class SMSPipeline:
                 embedding_model=current_model_id,
                 vector_id=vector_id,
                 recommended_action=analysis.recommended_action,
+                # Preserve a previously recorded human decision across
+                # re-analysis so rescans never silently drop review outcomes.
+                human_decision=existing_record.human_decision if existing_record else None,
             )
             embedding_obj: Optional[Embedding] = None
             if vector is not None:
