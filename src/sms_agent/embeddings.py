@@ -74,15 +74,19 @@ class GeminiEmbeddingProvider:
 
 class BedrockEmbeddingProvider:
     """
-    AWS-native embedding provider via Amazon Bedrock.
-    Intended production path once the account restriction is lifted.
-    Currently the Bedrock account restriction prevents live invocation,
-    so instantiation is kept safe and testable; actual calls will fail
-    with a clear error rather than silently returning fake data.
+    AWS-native embedding provider via Amazon Bedrock (Titan Embed V2).
+
+    Instantiation never touches the network; live calls require Bedrock
+    model access and fail with a clear EmbeddingError otherwise — never
+    silently returning fake data.
     """
 
     # Default model — Titan Text Embeddings v2, 1024 dimensions
     DEFAULT_MODEL_ID = "amazon.titan-embed-text-v2:0"
+    # Pinned output dimensionality: must match the S3 Vectors index.
+    # Titan V2 supports 256/512/1024; SMS uses 1024. Never rely on the
+    # service default — pin it explicitly in every request.
+    OUTPUT_DIMENSION = 1024
 
     def __init__(self, model_id: Optional[str] = None, bedrock_client=None):
         self._model_id = model_id or os.environ.get(
@@ -105,7 +109,11 @@ class BedrockEmbeddingProvider:
             "bedrock-runtime",
             region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
         )
-        payload = json.dumps({"inputText": text}).encode("utf-8")
+        payload = json.dumps({
+            "inputText": text,
+            "dimensions": self.OUTPUT_DIMENSION,
+            "normalize": True,
+        }).encode("utf-8")
         try:
             response = client.invoke_model(
                 modelId=self._model_id,
