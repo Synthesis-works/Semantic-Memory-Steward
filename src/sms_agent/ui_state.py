@@ -359,6 +359,33 @@ def render_category_bars(box, counts: Dict[str, int], title: str) -> bool:
     box.altair_chart(chart, use_container_width=True)
     return True
 
+
+def render_impact_chart(box, points: List[Dict[str, Any]]) -> bool:
+    """Line chart: unmanaged baseline vs SMS-managed storage (projected).
+
+    Points come from impact.projection_points: every point is labeled
+    projected because no historical measurements exist.
+    """
+    rows = []
+    for point in points or []:
+        rows.append({"month": point["month"], "series": "Without SMS",
+                     "bytes": point["baseline_bytes"]})
+        rows.append({"month": point["month"], "series": "With SMS",
+                     "bytes": point["managed_bytes"]})
+    if not rows:
+        return False
+    df = pd.DataFrame(rows)
+    chart = alt.Chart(df).mark_line(point=True).encode(
+        x=alt.X("month", title="Month (projected)"),
+        y=alt.Y("bytes", title="Storage used (bytes)"),
+        color=alt.Color("series", legend=alt.Legend(title=None)),
+        tooltip=["month", "series", "bytes"],
+    ).properties(
+        title="Storage growth: unmanaged vs SMS-managed (Projected)",
+        height=220)
+    box.altair_chart(chart, use_container_width=True)
+    return True
+
 def build_recommendation(
     policy: Optional[str],
     sensitivity: Any,

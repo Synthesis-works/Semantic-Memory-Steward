@@ -35,8 +35,8 @@ def test_s3_content_success(dummy_metadata):
     mock_s3.get_object.assert_called_once_with(Bucket="test-bucket", Key="demo/file.txt")
 
 def test_s3_content_unsupported_type(dummy_metadata):
-    dummy_metadata.extension = ".pdf"
-    
+    dummy_metadata.extension = ".docx"
+
     reader = S3ContentReader()
     with pytest.raises(ValueError, match="Unsupported content type"):
         reader.get_text(dummy_metadata)

@@ -8,6 +8,12 @@ from sms_agent.pipeline import SMSPipeline
 from sms_agent.actions import ActionRequest, ActionEngine
 from sms_agent.memory import DynamoDBMemoryStore
 from sms_agent.trace import TraceRecorder, render_trace_lines
+from sms_agent.impact import (
+    compute_impact,
+    format_bytes,
+    projection_points,
+    scale_scenario,
+)
 from sms_agent.ui_state import (
     action_consequences,
     build_recommendation,
@@ -16,12 +22,14 @@ from sms_agent.ui_state import (
     derive_status,
     format_action_result,
     get_doc_action,
+    is_managed_document,
     is_workspace_document,
     pending_reviews,
     policy_counts,
     preview_content,
     render_category_bars,
     render_donut,
+    render_impact_chart,
     result_for_doc,
     sensitivity_counts,
     set_doc_action,
@@ -146,6 +154,7 @@ def build_records(pipeline, inventory):
                 "Status": derive_status(record.recommended_action, item.key,
                                         getattr(record, "human_decision", None)),
                 "Has Memory": True,
+                "SizeBytes": item.size_bytes,
                 "s3_uri": s3_uri,
                 "raw_record": record,
                 "metadata": item
@@ -159,6 +168,7 @@ def build_records(pipeline, inventory):
                 "Policy": "PENDING_SCAN",
                 "Status": "-",
                 "Has Memory": False,
+                "SizeBytes": item.size_bytes,
                 "s3_uri": s3_uri,
                 "raw_record": None,
                 "metadata": item
@@ -626,6 +636,60 @@ if last_scan:
     else:
         st.info(f"Last scan: analyzed {last_scan.get('analyzed', 0)} document(s), "
                 f"duplicate signals {last_scan.get('duplicates', 0)}.")
+
+if records and summary["analyzed"] > 0:
+    managed_sizes = [item.size_bytes for item in inventory
+                     if is_managed_document(item.key)]
+    impact = compute_impact(records, managed_sizes)
+    st.markdown("### STORAGE & COST IMPACT")
+    st.caption("See what SMS can save by keeping your active workspace focused.")
+    hcol1, hcol2 = st.columns([2, 1])
+    with hcol1:
+        render_impact_chart(
+            hcol1, projection_points(impact["total_bytes"],
+                                     impact["potential_bytes"]))
+        if impact["potential_bytes"] > 0:
+            st.caption("PROJECTED illustrative 12-month outlook from current "
+                       "workspace composition; assumes no new uploads. Actual "
+                       "storage depends on future documents and decisions.")
+        else:
+            st.caption("No ARCHIVE-policy documents yet — the SMS-managed "
+                       "line matches baseline until cleanup candidates appear.")
+    with hcol2:
+        st.markdown("**WHY SMS IS WORTH IT**")
+        st.metric("Current active storage",
+                  format_bytes(impact["total_bytes"]))
+        st.metric("Potential storage reduction",
+                  format_bytes(impact["potential_bytes"]))
+        st.metric("Less active storage", f"{impact['potential_pct']:.0f}%")
+        st.metric("Documents for review", impact["review_docs"])
+        st.metric("Cleanup candidates", len(impact["potential_docs"]))
+        monthly_cost = impact["monthly_cost_usd"]
+        monthly_savings = impact["monthly_savings_usd"]
+        st.write(f"**Estimated monthly S3 cost:** "
+                 f"${monthly_cost:.2f}" if monthly_cost >= 0.01
+                 else f"**Estimated monthly S3 cost:** ${monthly_cost:.6f}")
+        st.write(f"**Estimated monthly savings:** "
+                 f"${monthly_savings:.2f}" if monthly_savings >= 0.01
+                 else f"**Estimated monthly savings:** ${monthly_savings:.6f}")
+        st.caption("Illustrative S3 Standard pricing — not your AWS bill.")
+        if impact["managed_bytes"] > 0:
+            st.caption(f"Relocated out of the active workspace: "
+                       f"{format_bytes(impact['managed_bytes'])} "
+                       f"(trash/archive — still stored until retention "
+                       f"removes it).")
+        scenario = scale_scenario(impact["potential_pct"])
+        st.caption(f"Illustrative scale scenario (not a measurement): the "
+                   f"same {impact['potential_pct']:.0f}% applied to a 100 GB "
+                   f"workspace could save "
+                   f"{format_bytes(scenario['saved_bytes'])} "
+                   f"(~${scenario['monthly_savings_usd']:.2f}/mo).")
+        st.info("SMS doesn't delete blindly. It analyzes first, applies "
+                "policy, and asks for human approval when required.")
+    formats = sorted({row["Filename"].rsplit(".", 1)[-1].upper()
+                      for row in records if "." in row["Filename"]})
+    st.caption(f"{impact['doc_count']} documents · {len(formats)} "
+               f"format(s): {', '.join(formats)}")
 
 if records and summary["analyzed"] > 0:
     st.markdown("### Workspace analytics")

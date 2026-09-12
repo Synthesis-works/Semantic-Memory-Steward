@@ -1,0 +1,4 @@
+hostname,status,region
+web-01,healthy,us-east-1
+web-02,degraded,us-east-1
+db-01,healthy,us-east-1

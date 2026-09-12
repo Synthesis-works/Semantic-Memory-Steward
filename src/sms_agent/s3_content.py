@@ -1,12 +1,78 @@
+import html as html_module
+import io
 import os
-import boto3
+from html.parser import HTMLParser
 from typing import Optional
+
+import boto3
+
 from .models import FileMetadata, RetrievedContent
+
+
+class _VisibleTextExtractor(HTMLParser):
+    """Collect visible text, dropping tags plus script/style content."""
+
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self._skip += 1
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style") and self._skip:
+            self._skip -= 1
+
+    def handle_data(self, data):
+        if not self._skip:
+            text = data.strip()
+            if text:
+                self.parts.append(text)
+
+    def text(self):
+        return html_module.unescape("\n".join(self.parts))
+
+
+def extract_html_text(raw: str) -> str:
+    parser = _VisibleTextExtractor()
+    parser.feed(raw)
+    return parser.text()
+
+
+def extract_pdf_text(body: bytes) -> str:
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(body))
+    pages = [(page.extract_text() or "") for page in reader.pages]
+    text = "\n".join(part for part in (p.strip() for p in pages) if part)
+    if not text:
+        raise ValueError("PDF contains no extractable text.")
+    return text
+
+
+def extract_xlsx_text(body: bytes) -> str:
+    from openpyxl import load_workbook
+    workbook = load_workbook(io.BytesIO(body), read_only=True,
+                             data_only=True)
+    blocks = []
+    for sheet in workbook.worksheets:
+        blocks.append(f"Sheet: {sheet.title}")
+        for row in sheet.iter_rows(values_only=True):
+            cells = [str(value) for value in row if value is not None]
+            if cells:
+                blocks.append(" | ".join(cells))
+    text = "\n".join(blocks).strip()
+    if not text:
+        raise ValueError("Workbook contains no extractable cell values.")
+    return text
+
 
 class S3ContentReader:
     """Reads actual text content from Amazon S3 for semantic analysis."""
-    
-    ALLOWED_EXTENSIONS = {'.txt', '.md', '.csv'}
+
+    ALLOWED_EXTENSIONS = {'.txt', '.md', '.csv', '.json', '.html',
+                          '.pdf', '.xlsx'}
     
     def __init__(self, s3_client=None, max_bytes: int = None):
         self.s3 = s3_client or boto3.client('s3')
@@ -38,11 +104,18 @@ class S3ContentReader:
         try:
             response = self.s3.get_object(Bucket=metadata.bucket, Key=metadata.key)
             body = response['Body'].read()
-            # Decode carefully (handle UTF-16 BOM if present)
-            if body.startswith(b'\xff\xfe') or body.startswith(b'\xfe\xff'):
-                text_content = body.decode('utf-16', errors='replace')
+            if ext == ".pdf":
+                text_content = extract_pdf_text(body)
+            elif ext == ".xlsx":
+                text_content = extract_xlsx_text(body)
             else:
-                text_content = body.decode('utf-8', errors='replace')
+                # Decode carefully (handle UTF-16 BOM if present)
+                if body.startswith(b'\xff\xfe') or body.startswith(b'\xfe\xff'):
+                    text_content = body.decode('utf-16', errors='replace')
+                else:
+                    text_content = body.decode('utf-8', errors='replace')
+                if ext == ".html":
+                    text_content = extract_html_text(text_content)
             content_type = response.get('ContentType', 'text/plain')
             
             return RetrievedContent(
