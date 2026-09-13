@@ -301,7 +301,7 @@ def test_workspace_summary_reflects_real_records():
 def test_provider_status_is_secondary_but_not_hidden():
     at = _run_to_inspector(lambda req: _verified_keep(req), [KEY], [_record()])
     top_sidebar = _texts(at.sidebar.markdown)
-    assert any("fallback" in t.lower() and "bedrock" in t.lower()
+    assert any("llm" in t.lower() and "bedrock" in t.lower()
                for t in top_sidebar), (
         "a one-line honest provider summary must stay visible"
     )

@@ -134,7 +134,17 @@ class SMSAgent:
         # AgentCore Harness (invoked from SMS; the harness is never created
         # here). Same product contract as the Strands/Bedrock path.
         if provider == "agentcore":
-            from .agentcore import AgentCoreError, analyze_file_with_harness
+            from .agentcore import AgentCoreError, HARNESS_ARN_ENV, analyze_file_with_harness
+            harness_arn = os.getenv(HARNESS_ARN_ENV) or "unset"
+            if trace is not None:
+                trace.record(
+                    "AI_ANALYSIS",
+                    "AgentCore analysis",
+                    f"Invoking AgentCore harness ({harness_arn}) with model {self.model_id}",
+                    status="RUNNING",
+                    document=file_key,
+                    event_type="started",
+                )
             try:
                 return analyze_file_with_harness(
                     file_key,

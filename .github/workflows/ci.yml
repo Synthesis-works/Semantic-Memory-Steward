@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/agentic-ux
+      - feature/agentcore-live-integration
       - main
   pull_request:
 

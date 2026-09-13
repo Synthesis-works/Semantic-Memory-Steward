@@ -2,8 +2,11 @@
 
 ## Status
 
-**Investigation + adapter code only. No AWS resource has been created.**
-Deployment of any AgentCore resource requires explicit human approval.
+**Live.** An AgentCore Harness (`sms_semantic_analysis`) is provisioned in
+`us-east-1`, `amazon.nova-micro-v1:0` runs the Strands classification step
+inside it, and SMS invokes it through the `bedrock-agentcore` data plane.
+Deployment was performed under explicit human approval with least-privilege
+IAM and a guarded, non-mutating live smoke test.
 
 ## Decision
 
@@ -18,71 +21,108 @@ usage (`src/sms_agent/agent.py`) with zero framework change.
 | **Runtime** (container) | ARM64 image → ECR, `create-agent-runtime` + endpoint, custom IAM role, network + authorizer config. | Overkill: SMS's loop is already Strands; Runtime is for writing your own loop/graph/protocol. |
 | **No AgentCore** | — | Valid fallback; Bedrock + Strands `structured_output` keeps working. |
 
-## What the adapter does (merged into `feature/agentic-ux`)
+## What the adapter does (merged on the AgentCore integration branch)
 
-- `src/sms_agent/agentcore.py` — new, thin module:
+- `src/sms_agent/agentcore.py` — thin module:
   - `build_messages()` → `InvokeHarness` messages (file key, metadata, content, JSON contract).
   - `_stream_to_text()` → unwraps `contentBlockDelta.delta.text`; surfaces streamed
     `validationException` / `internalServerException` / `runtimeClientError` as `AgentCoreError`.
-  - `_parse_result_text()` → JSON → `SemanticAnalysisResult` (same contract as the
-    Gemini fallback, including the shared `recommended_action` case normalizer).
+  - `_parse_result_text()` → JSON → `SemanticAnalysisResult` (shared contract with the
+    Gemini fallback). Malformed JSON, empty output, and pydantic `ValidationError` are
+    wrapped as `AgentCoreError` (honest failure, never a fake result).
   - `analyze_file_with_harness()` → calls `invoke_harness` with a fresh
-    `runtimeSessionId` (stateless, matches SMS's per-file call pattern).
-- `SMSAgent.analyze_file` — new `provider == "agentcore"` branch
+    `runtimeSessionId` (stateless, matches SMS's per-file call pattern). Botocore
+    `ClientError`/network failures are wrapped as `AgentCoreError`.
+- `SMSAgent.analyze_file` — `provider == "agentcore"` branch
   (`SMS_LLM_PROVIDER=agentcore`), same seam as the gemini/groq fallbacks.
-  Reads `SMS_AGENTCORE_HARNESS_ARN`. No product-behavior change to the
-  default `bedrock` path.
-- `tests/test_agentcore_integration.py` — 10 hermetic tests (mocked client,
-  no network, no credentials).
+  Records a truthful `AI_ANALYSIS` trace event naming the harness and model before
+  invoking; raises `ValueError` (no silent fallback) on `AgentCoreError`.
+  Default provider is unchanged (`bedrock`).
+- `tests/test_agentcore_integration.py` — hermetic tests (mocked client,
+  no network, no credentials): stream unwrapping, error surfacing, malformed/empty
+  JSON, schema mismatch, authz failure, network failure, no-Gemini-fallback,
+  fresh session ids, and trace attribution.
+- `scripts/smoke_agentcore.py` — manual, opt-in, non-mutating live smoke test
+  (never run by CI; requires `--yes`, real credentials, and the harness ARN).
 
 The harness is **never created by SMS**. SMS only calls an existing harness.
 
-## Cost and risk assessment
+## Live resources (provisioned 2026-09-13, account 527557823928, us-east-1)
 
-| Item | Assessment |
-|------|------------|
-| Harness control-plane resource | Serverless; no idle compute. Idle cost ≈ $0 (no runtime running between invocations). |
-| Per invocation | Model tokens (Nova Micro `amazon.nova-micro-v1:0`, on-demand, effectively $0.00014–0.00021/1K in tokens) + agent loop overhead (harness tokens/microVM-seconds per session) + CloudWatch logs. SMS analyzes typically ≤ dozens of files per scan → negligible; still, set explicit runtime guardrails. |
-| Execution role | New IAM role required — **needs approval** (user rule: no IAM changes without approval). Scope least-privilege (Bedrock model ARNs only; `bedrock-agentcore:*` actions only as needed) and add confused-deputy `aws:SourceAccount` / `aws:SourceArn` conditions. |
-| Trust boundary | `invoke_harness` input is trusted only because SMS is the sole caller and SMS's policy/action engine already gates destructive actions. Keep authorizer (SigV4 default) and never accept end-user-supplied override fields. |
-| Rate / abuse | Add application-layer throttling in front of SMS's harness calls; each invocation spins an isolated microVM. |
-| Logging/PII | Harness observability captures tool I/O and payloads. Encrypt the harness CloudWatch log group with a KMS key and set retention; do not enable verbose tracing until reviewed. |
-| Model access | `amazon.nova-micro-v1:0` already authorized in `us-east-1` (account `527557823928`). |
+| Resource | Value |
+|----------|-------|
+| Execution role | `arn:aws:iam::527557823928:role/sms-agentcore-harness-role` |
+| Role trust policy | Principal `bedrock-agentcore.amazonaws.com` + `aws:SourceAccount=527557823928` (confused-deputy) |
+| Role inline policy | `sms-agentcore-model-invoke`: `bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream` on `arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-micro-v1:0` **only** |
+| Harness | `arn:aws:bedrock-agentcore:us-east-1:527557823928:harness/sms_semantic_analysis-qRj6vqUQo8` |
+| Harness model | `bedrockModelConfig`: `amazon.nova-micro-v1:0`, `maxTokens=2048`, `temperature=0.1` |
+| Harness tooling | `tools=[]`, `allowedTools=[]`, `skills=[]` (no tools available to the model) |
+| Harness memory | `memory={disabled:{}}` (stateless per call) |
+| Guardrails | `maxIterations=15`, `timeoutSeconds=120`, truncation sliding window (150 msgs) |
+| System prompt | SMS `SYSTEM_PROMPT` + `JSON_CONTRACT` (harness default; SMS overrides per call) |
 
-## Deployment command sequence (NOT executed — for approval only)
+### Provisioning notes (lessons captured)
 
-All commands are dry-run/planning and must not be run without approval.
+1. `create-harness` **does not** accept hyphens in `harnessName`
+   (pattern `[a-zA-Z][a-zA-Z0-9_]{0,39}`) → `sms_semantic_analysis`.
+2. `model` is a tagged union: must be `{"bedrockModelConfig": {...}}`, not a flat map.
+3. `tags` must be a dict (`{"k":"v"}`), not a list of `{key,value}`.
+4. **Trust policy**: the `aws:SourceArn` (harness/\*) condition caused harness control's
+   role validation to fail (`Role validation failed ... trust policy allows assumption
+   by this service`). Resolution: keep `aws:SourceAccount` (the cross-account confused-deputy
+   guard) and drop `aws:SourceArn`. The role-scoped `bedrock:*` ARN + `SourceAccount` still
+   bound to this account and this role.
+5. **Bedrock model ARN has an empty account segment**: `arn:aws:bedrock:us-east-1::foundation-model/...`
+   (not `:us-east-1:527557823928:foundation-model/...`). With the correct ARN the harness's
+   assumed role successfully called `ConverseStream`.
+
+## Smoke test result (live, 2026-09-13)
+
+`scripts/smoke_agentcore.py --yes` with `SMS_LLM_PROVIDER=agentcore` analyzed
+EXACTLY ONE document (`demo/service-config.json`) through `SMSAgent.analyze_file`
+(direct call — bypasses the idempotency cache so the harness is genuinely invoked):
+
+- Before: S3 ETag `a4a9d915…`, 28 objects — After: identical (no mutation performed).
+- Result: `category=configuration, sensitivity=public, importance_score=0.7,
+  confidence=0.9, recommended_action=retain` (valid `SemanticAnalysisResult`).
+- Semantic memory (DynamoDB `sms-semantic-memory`, 28 rows) untouched — analysis
+  timestamp for the key unchanged; no row count change; no vector write.
+
+## Cost verification
+
+| Item | Observation |
+|------|-------------|
+| Control-plane harness | Serverless; idle cost ≈ $0 (no runtime between invocations). |
+| Per invocation (verified live) | One Nova Micro round-trip via `ConverseStream` + agent-loop/microVM overhead + CloudWatch logs ≈ negligible single-digit cent range; SMS scans ≤ dozens of files. |
+| Idle resources | Only the harness definition + role exist; runtime session ends after the invocation (no always-on compute). |
+| Teardown | `aws bedrock-agentcore-control delete-harness --harness-id <id>`; `aws iam delete-role-policy` + `aws iam delete-role`. |
+
+## Environment finding (pre-existing, NOT caused by AgentCore work)
+
+The S3 vector bucket `sms-semantic-vectors-527557823928` (referenced by the app's
+default `SMS_VECTOR_BUCKET`) is currently **absent** from the account (only
+`semantic-memory-steward-dev-527557823928` exists). Today's smoke test performed no
+writes and could not have affected it; this is independent drift to investigate
+separately (the vector memory write path will fail until it is resolved). No bucket
+was created or deleted as part of this work.
+
+## Deployment command sequence (reproducible record)
 
 ```bash
-# 1. Least-privilege execution role with confused-deputy guard
-#    (role trust policy):
-#    { "Effect":"Allow","Principal":{"Service":"bedrock-agentcore.amazonaws.com"},
-#      "Action":"sts:AssumeRole",
-#      "Condition":{"StringEquals":{"aws:SourceAccount":"527557823928"},
-#                   "ArnLike":{"aws:SourceArn":"arn:aws:bedrock-agentcore:us-east-1:527557823928:harness/*"}}}
+# 1. Role (trust: bedrock-agentcore.amazonaws.com + aws:SourceAccount only)
+aws iam create-role --role-name sms-agentcore-harness-role \
+  --assume-role-policy-document file://sms_trust.json
+aws iam put-role-policy --role-name sms-agentcore-harness-role \
+  --policy-name sms-agentcore-model-invoke \
+  --policy-document file://sms_policy.json
 
-# 2. Create the harness (control plane). Explicit guardrails, SigV4 default.
-aws bedrock-agentcore-control create-harness \
-  --harness-name SMSAnalyzer \
-  --execution-role-arn ARN_OF_STEP_1_ROLE \
-  --model '{"bedrockModelConfig":{"modelId":"amazon.nova-micro-v1:0","maxTokens":1024,"temperature":0.1}}' \
-  --max-iterations 15 --max-tokens 2048 --timeout-seconds 120
+# 2. Harness (NAME: no hyphens; model = tagged union; tags = dict)
+aws bedrock-agentcore-control create-harness --cli-input-json file://sms_harness.json
+aws bedrock-agentcore-control get-harness --harness-id sms_semantic_analysis-XXXX
 
-# 3. Poll until READY (a harness is not invokable before READY).
-aws bedrock-agentcore-control get-harness --harness-id <harnessId>
-
-# 4. Point SMS at the harness.
-#    export SMS_LLM_PROVIDER=agentcore
-#    export SMS_AGENTCORE_HARNESS_ARN=<arn>
-
-# 5. Validate with the existing hermetic suite, then a guarded live test:
-#    AWS_PROFILE=opencode AWSCLI-region us-east-1 smoke test on a demo file
-#    with execute_action=False (same policy engine, human-approval, verification
-#    chain; agent output still flows through SMS ActionEngine verification).
+# 3. Point SMS at the harness (default provider remains bedrock)
+#    SMS_LLM_PROVIDER=agentcore  SMS_AGENTCORE_HARNESS_ARN=<arn>
 ```
-
-If any of steps 1–3 would create a meaningfully billable resource, or the
-execution-role policy would exceed least privilege, stop and report.
 
 ## Safety invariants kept intact
 
@@ -91,3 +131,5 @@ execution-role policy would exceed least privilege, stop and report.
 - No deletion of S3 buckets/docs, DynamoDB tables/records, indexes, or CF stacks.
 - No changes to `D:\SMS\.env`; never touch `D:\atlas\.env`.
 - AgentCore never bypasses SMS's `REVIEW`/protected-delete semantics.
+- No silent fallback: AgentCore failures surface as honest `ValueError`
+  (`AgentCore/Strands inference failed: …`), never as a simulated result.
