@@ -797,7 +797,7 @@ if selected_file:
             st.write(f"**Category:** {raw.category}")
             st.write(f"**Sensitivity:** {raw.sensitivity}")
             st.write(f"**Importance Score:** {raw.importance_score}")
-            st.write(f"**Reasoning:** Retrieved from external fallback LLM.")
+            st.write("**Reasoning:** Analysis reasoning is not persisted with the semantic memory record.")
             if getattr(raw, "human_decision", None):
                 st.info(f"**Human decision:** {raw.human_decision} — recorded in semantic memory.")
             
