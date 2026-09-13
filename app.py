@@ -41,20 +41,40 @@ load_dotenv()
 
 st.set_page_config(page_title="Semantic Memory Steward", layout="wide", initial_sidebar_state="expanded")
 
+def build_embedding_provider():
+    """Select the embedding provider for the memory pipeline.
+
+    Bedrock Titan Embed V2 (1024-dim) is the default/primary production path.
+    Gemini remains available by explicit choice (SMS_EMBEDDING_PROVIDER=gemini).
+    An explicit SMS_EMBEDDING_PROVIDER=none/off/disabled/empty returns None,
+    which keeps the entire memory pipeline vector-free.
+    """
+    choice = os.getenv("SMS_EMBEDDING_PROVIDER", "bedrock").strip().lower()
+    if choice in ("", "none", "off", "disabled"):
+        return None
+    if choice == "gemini":
+        from sms_agent.embeddings import GeminiEmbeddingProvider
+        return GeminiEmbeddingProvider(api_key=os.environ.get("GEMINI_API_KEY", ""))
+    from sms_agent.embeddings import BedrockEmbeddingProvider
+    return BedrockEmbeddingProvider()
+
+
 def init_pipeline():
     if "pipeline" not in st.session_state:
         os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
-        os.environ.setdefault("SMS_LLM_PROVIDER", "gemini")
         bucket = os.getenv("SMS_S3_BUCKET", "semantic-memory-steward-dev-527557823928")
         try:
             from sms_agent.memory import DynamoDBMemoryStore, S3VectorStore
-            from sms_agent.embeddings import GeminiEmbeddingProvider
             memory_store = DynamoDBMemoryStore(table_name=os.getenv("SMS_DYNAMO_TABLE", "sms-semantic-memory"))
-            vector_store = S3VectorStore(vector_bucket=os.getenv("SMS_VECTOR_BUCKET", "sms-semantic-vectors-527557823928"))
+            vector_store = S3VectorStore(
+                vector_bucket=os.getenv("SMS_VECTOR_BUCKET", "sms-semantic-vectors-527557823928"),
+                dimension=int(os.getenv("SMS_VECTOR_DIMENSION", "1024")),
+            )
             st.session_state.pipeline = SMSPipeline(
                 bucket_name=bucket,
                 memory_store=memory_store,
-                vector_store=vector_store
+                vector_store=vector_store,
+                embedding_provider=build_embedding_provider(),
             )
         except Exception as e:
             st.error(f"Failed to initialize pipeline: {e}")
