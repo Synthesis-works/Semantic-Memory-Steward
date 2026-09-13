@@ -1,0 +1,13 @@
+# Streamlit Community Cloud dependencies
+# Installs the local src/sms_agent package plus all direct runtime imports.
+-e .
+streamlit
+pandas
+altair
+python-dotenv
+boto3
+botocore
+pydantic>=2
+pypdf>=6,<7
+openpyxl>=3.1
+strands-agents>=1.54.0
