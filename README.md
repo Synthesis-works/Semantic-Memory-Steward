@@ -75,6 +75,12 @@ See [`docs/architecture.md`](docs/architecture.md) for the full Mermaid diagram 
 
 ---
 
+## Economic ESTIMATE (informational, additive)
+
+SMS includes a deterministic economic-ESTIMATE module (`src/sms_agent/economics.py`) that computes a purely **informational ESTIMATE** of whether a governance decision is economically worthwhile. It is **additive-only and NEVER a gate**: it never alters the policy decision, never authorizes or blocks an action, never bypasses the human approval boundary, and never changes `recommended_action` or the ActionEngine. The optional `economic_assessment` field on `SemanticAnalysisResult` carries the ESTIMATE and defaults to `None` (full backward compatibility).
+
+---
+
 ## Safety & Human Approval Model
 
 SMS is built around the principle that **autonomy should be bounded by risk**:
@@ -106,11 +112,12 @@ SMS/
 │   ├── importance.py         # Deterministic importance scoring
 │   ├── relationships.py      # Hash/ETag + semantic vector relationship detection
 │   ├── memory.py             # DynamoDB + S3 Vectors persistence
+│   ├── economics.py          # Economic ESTIMATE assessment (informational, additive, ESTIMATE-only, never a gate)
 │   ├── embeddings.py         # Embedding providers (Gemini, Bedrock)
 │   ├── s3_inventory.py       # S3 object inventory
 │   ├── s3_content.py         # S3 content reader
 │   └── models.py             # Pydantic domain models
-├── tests/                    # 158 tests, 100% passing
+├── tests/                    # 372 tests, 100% passing (incl. 9 economics ESTIMATE tests)
 ├── evaluation/               # Offline governance evaluation harness
 │   ├── runner.py             # Evaluator (offline + live modes)
 │   └── fixtures.py           # 5 test cases covering all policy branches
@@ -178,7 +185,7 @@ GEMINI_API_KEY=your-key-here
 pytest
 ```
 
-363 hermetic tests covering: pipeline idempotency, policy invariants, relationship detection, authorization boundaries, Comprehend enrichment logic, DynamoDB/S3 Vectors persistence, action engine safety, human approval boundary, Strands/Bedrock wiring, and the AgentCore harness adapter (no credentials or live AWS calls required).
+372 hermetic tests covering: pipeline idempotency, policy invariants, relationship detection, authorization boundaries, Comprehend enrichment logic, DynamoDB/S3 Vectors persistence, action engine safety, human approval boundary, Strands/Bedrock wiring, and the AgentCore harness adapter (no credentials or live AWS calls required).
 
 ---
 
