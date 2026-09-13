@@ -21,6 +21,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, List
 
 from .models import SemanticMemoryRecord, Embedding, SemanticMatch
+from .economics import EconomicAssessment
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +168,10 @@ class DynamoDBMemoryStore:
                 vector_id=item["vector_id"],
                 recommended_action=item.get("recommended_action", "retain"),
                 human_decision=item.get("human_decision"),
+                economic_assessment=(
+                    EconomicAssessment.model_validate(item["economic_assessment"])
+                    if item.get("economic_assessment") else None
+                ),
             )
         except (KeyError, ValueError) as exc:
             raise RuntimeError(
@@ -202,6 +207,8 @@ class DynamoDBMemoryStore:
             item["content_hash"] = record.content_hash
         if record.human_decision:
             item["human_decision"] = record.human_decision
+        if record.economic_assessment is not None:
+            item["economic_assessment"] = record.economic_assessment.model_dump(mode="json")
 
         try:
             self._table().put_item(Item=item)
