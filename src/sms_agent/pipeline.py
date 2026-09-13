@@ -202,7 +202,20 @@ class SMSPipeline:
         if self.embedding_provider is None:
             return None
         try:
-            return self.embedding_provider.embed_text(text)
+            from .embed_prep import prepare_embedding_text
+            prepared = prepare_embedding_text(text)
+        except Exception as exc:
+            log.warning("Embedding preprocessor failed: %s", exc)
+            return None
+        if prepared.truncated:
+            log.info(
+                "Embedding input reduced %s -> %s chars via %s "
+                "(%s blocks collapsed)",
+                prepared.chars_before, prepared.chars_after, prepared.method,
+                prepared.collapsed_blocks,
+            )
+        try:
+            return self.embedding_provider.embed_text(prepared.text)
         except Exception as exc:
             log.warning("Embedding generation failed: %s", exc)
             return None
@@ -429,8 +442,11 @@ class SMSPipeline:
                 sensitivity=analysis.sensitivity,
                 importance_score=importance.score,
                 analysis_timestamp=datetime.now(timezone.utc),
-                embedding_model=current_model_id,
-                vector_id=vector_id,
+                # Retry-safety: only stamp the model/vector when an embedding
+                # actually exists. A failed embed keeps the previous state so
+                # the next pass re-attempts instead of marking the doc done.
+                embedding_model=current_model_id if vector is not None else None,
+                vector_id=vector_id if vector is not None else None,
                 recommended_action=analysis.recommended_action,
                 # Preserve a previously recorded human decision across
                 # re-analysis so rescans never silently drop review outcomes.
@@ -502,8 +518,8 @@ class SMSPipeline:
             "memory": {
                 "reused_analysis": not need_analysis,
                 "reused_embedding": not need_embedding,
-                "embedding_model": current_model_id,
-                "vector_id": vector_id,
+                "embedding_model": current_model_id if vector is not None else None,
+                "vector_id": vector_id if vector is not None else None,
                 "persisted": persisted,
             },
         }

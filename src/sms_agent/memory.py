@@ -194,8 +194,8 @@ class DynamoDBMemoryStore:
             "sensitivity": record.sensitivity,
             "importance_score": importance_decimal,  # Numeric, not string
             "analysis_timestamp": record.analysis_timestamp.isoformat(),
-            "embedding_model": record.embedding_model,
-            "vector_id": record.vector_id,
+            "embedding_model": record.embedding_model or "none",
+            "vector_id": record.vector_id or "",
             "recommended_action": record.recommended_action,
         }
         if record.content_hash:

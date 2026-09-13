@@ -124,8 +124,8 @@ class SemanticMemoryRecord(BaseModel):
     sensitivity: str
     importance_score: float
     analysis_timestamp: datetime
-    embedding_model: str
-    vector_id: str
+    embedding_model: Optional[str] = None  # None = no embedding exists (retry target)
+    vector_id: Optional[str] = None  # None = no vector in the store (retry target)
     recommended_action: str = "retain"  # Cached to faithfully reconstruct analysis on cache hits
     human_decision: Optional[str] = None  # Human review outcome, e.g. "KEEP"; policy output untouched
 
