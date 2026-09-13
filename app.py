@@ -14,6 +14,7 @@ from sms_agent.impact import (
     projection_points,
     scale_scenario,
 )
+from sms_agent.economics import compute_economic_assessment
 from sms_agent.ui_state import (
     action_consequences,
     build_recommendation,
@@ -419,6 +420,10 @@ def render_review_page(pipeline, inventory, records):
     st.header(f"📄 {key}")
     st.write(f"**{raw.sensitivity.upper()} · IMPORTANCE {round(raw.importance_score, 2)}"
              f" · POLICY: {raw.recommended_action.upper()}**")
+    econ = getattr(raw, "economic_assessment", None)
+    if econ is not None:
+        st.caption(f"Econ ESTIMATE: {econ.status.replace('_', ' ')} "
+                   f"(net {econ.estimated_net_benefit_usd:+.4f} USD/yr est.)")
     st.write(f"**STATUS: {status.replace('_', ' ')}**")
     if status == "PENDING_REVIEW":
         st.error("REVIEW REQUIRED")
