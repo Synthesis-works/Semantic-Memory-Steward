@@ -50,7 +50,7 @@ def init_pipeline():
             from sms_agent.memory import DynamoDBMemoryStore, S3VectorStore
             from sms_agent.embeddings import GeminiEmbeddingProvider
             memory_store = DynamoDBMemoryStore(table_name=os.getenv("SMS_DYNAMO_TABLE", "sms-semantic-memory"))
-            vector_store = S3VectorStore(vector_bucket=bucket)
+            vector_store = S3VectorStore(vector_bucket=os.getenv("SMS_VECTOR_BUCKET", "sms-semantic-vectors-527557823928"))
             st.session_state.pipeline = SMSPipeline(
                 bucket_name=bucket,
                 memory_store=memory_store,

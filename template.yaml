@@ -20,8 +20,8 @@ Parameters:
 
   VectorDimension:
     Type: Number
-    Default: 768
-    Description: The dimensionality of the vectors (768 for gemini-embedding-2, 1024 for titan-embed-text-v2).
+    Default: 1024
+    Description: The dimensionality of the vectors (1024 for titan-embed-text-v2, 768 for gemini-embedding-2).
 
 Resources:
   # -------------------------------------------------------------------------
@@ -142,7 +142,36 @@ Resources:
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, {"Status": "Created"}, bucket_name)
                       
                   elif request_type == 'Update':
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {"Status": "Updated"}, bucket_name)
+                      old_props = event.get('OldResourceProperties', {})
+                      try:
+                          old_dimension = int(old_props.get('VectorDimension', dimension))
+                      except (TypeError, ValueError):
+                          old_dimension = dimension
+                      if old_dimension != dimension:
+                          # S3 Vectors has no UpdateIndex; a dimensionality
+                          # change must recreate the index with the new
+                          # dimension, preserving the index name.
+                          log.info("Dimension change %d -> %d: recreating index %s", old_dimension, dimension, index_name)
+                          try:
+                              client.delete_index(vectorBucketName=bucket_name, indexName=index_name)
+                          except Exception as e:
+                              if 'NotFound' not in str(e) and 'NoSuchIndex' not in str(e) and 'does not exist' not in str(e).lower():
+                                  raise
+                          try:
+                              client.create_index(
+                                  vectorBucketName=bucket_name,
+                                  indexName=index_name,
+                                  dataType='float32',
+                                  dimension=dimension,
+                                  distanceMetric='cosine'
+                              )
+                          except Exception as e:
+                              if 'AlreadyExists' not in str(e) and 'Conflict' not in str(e):
+                                  raise
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, {"Status": "Index recreated"}, bucket_name)
+                      else:
+                          log.info("No dimension change for %s; nothing to do", index_name)
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, {"Status": "No change required"}, bucket_name)
                       
                   elif request_type == 'Delete':
                       log.info("Intentionally retaining index %s and bucket %s during stack deletion", index_name, bucket_name)
