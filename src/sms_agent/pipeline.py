@@ -28,6 +28,7 @@ from .agent import SMSAgent
 from .importance import ImportanceScorer
 from .relationships import RelationshipAnalyzer
 from .policy import PolicyEngine
+from .economics import compute_economic_assessment
 from .models import (
     PolicyDecision, ActionRequest, SemanticMemoryRecord,
     Embedding, SemanticAnalysisResult,
@@ -220,6 +221,24 @@ class SMSPipeline:
             log.warning("Embedding generation failed: %s", exc)
             return None
 
+    def _economic_saving_bytes(
+        self,
+        decision: PolicyDecision,
+        metadata: Any,
+    ) -> int:
+        """Bytes that count as a genuine potential storage saving.
+
+        Only an ARCHIVE policy candidate is counted. KEEP/REVIEW/TRASH never
+        count (an ARCHIVE is a move to cheaper storage; a REVIEW is emergency
+        retention review; TRASH/QUARANTINE is a destructive flow, not a
+        storage-saving measure). Purely informational input for the
+        economic ESTIMATE — never fed back into policy/approval/actions.
+        """
+        if decision.action == "ARCHIVE" and metadata is not None:
+            size = getattr(metadata, "size_bytes", None)
+            return size if isinstance(size, int) and size > 0 else 0
+        return 0
+
     # ------------------------------------------------------------------
     # Main pipeline
     # ------------------------------------------------------------------
@@ -386,6 +405,8 @@ class SMSPipeline:
                 reasoning="Reused from semantic memory cache (content unchanged).",
                 recommended_action=existing_record.recommended_action,
             )
+            if existing_record is not None:
+                analysis.economic_assessment = existing_record.economic_assessment
             if trace is not None:
                 trace.succeed(
                     "AI_ANALYSIS", "Semantic analysis complete",
@@ -417,6 +438,17 @@ class SMSPipeline:
         # 9. Importance + Policy
         importance = self.scorer.score(metadata, analysis, relationships)
         decision = self.policy.evaluate(analysis, metadata, relationships)
+        if need_analysis:
+            # 9b. Economic ESTIMATE (informational, AFTER the policy decision).
+            # Only a genuine ARCHIVE policy candidate is counted as a potential
+            # storage saving (KEEP/REVIEW/TRASH are never counted). The
+            # assessment NEVER feeds back into policy/authorization/approval.
+            # On a cache-hit (content unchanged) the stored assessment from the
+            # original analysis is reused — never recomputed (step 6b).
+            potential_saving = self._economic_saving_bytes(decision, metadata)
+            assessment = compute_economic_assessment(
+                potential_saving_bytes=potential_saving)
+            analysis.economic_assessment = assessment
         if trace is not None:
             trace.succeed("IMPORTANCE", "Importance scorer",
                           f"Score: {importance.score:.2f}", document=file_key)
@@ -456,6 +488,7 @@ class SMSPipeline:
                                 if existing_record is not None
                                 and existing_record.human_decision in ("KEEP",)
                                 else None),
+                economic_assessment=analysis.economic_assessment,
             )
             embedding_obj: Optional[Embedding] = None
             if vector is not None:

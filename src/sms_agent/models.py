@@ -137,6 +137,14 @@ class SemanticMemoryRecord(BaseModel):
     vector_id: Optional[str] = None  # None = no vector in the store (retry target)
     recommended_action: str = "retain"  # Cached to faithfully reconstruct analysis on cache hits
     human_decision: Optional[str] = None  # Human review outcome, e.g. "KEEP"; policy output untouched
+    economic_assessment: Optional["EconomicAssessment"] = Field(
+        default=None,
+        description=("Optional, purely informational economic-gate assessment "
+                     "(labeled ESTIMATE). Layered ON TOP of the policy/safety/"
+                     "approval decision: it can never override policy, authorize "
+                     "an action, bypass human approval, or unlock mutations. "
+                     "Back-compat: defaults to None."),
+    )
 
 class Embedding(BaseModel):
     """Domain model for a vector embedding."""
