@@ -59,6 +59,18 @@ def build_embedding_provider():
     return BedrockEmbeddingProvider()
 
 
+def _llm_provider_summary() -> str:
+    """One honest, provider-derived LLM status line for the sidebar."""
+    provider = os.getenv("SMS_LLM_PROVIDER", "bedrock").strip().lower()
+    if provider == "agentcore":
+        return "LLM: AgentCore harness active (Nova Micro via Strands)"
+    if provider == "sagemaker":
+        return "LLM: SageMaker endpoint active (Strands)"
+    if provider in ("gemini", "groq", "mistral", "nvidia"):
+        return f"LLM: external fallback active ({provider})"
+    return "LLM: AWS Bedrock active (Strands · Nova Micro)"
+
+
 def init_pipeline():
     if "pipeline" not in st.session_state:
         os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -551,23 +563,31 @@ st.sidebar.markdown("DynamoDB &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ✅ Connected")
 st.sidebar.markdown("S3 Vectors &nbsp;&nbsp;&nbsp; ✅ Connected")
 st.sidebar.markdown("Comprehend &nbsp;&nbsp;&nbsp; ✅ Connected")
 st.sidebar.markdown("")
-st.sidebar.markdown("LLM: external fallback active · Bedrock restricted")
+st.sidebar.markdown(_llm_provider_summary())
 
 with st.sidebar.expander("Technical details (providers, quotas, Bedrock)"):
-    st.markdown("**LLM Provider**")
-    st.markdown("External fallback &nbsp;&nbsp;&nbsp; 🌐 Active")
-    st.markdown("AWS Bedrock &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ⚠️ Account restricted")
+    _active_provider = os.getenv("SMS_LLM_PROVIDER", "bedrock").strip().lower()
+    st.markdown("**Analysis provider**")
+    if _active_provider == "agentcore":
+        st.markdown("AgentCore Harness &nbsp;&nbsp;&nbsp; ✅ Active")
+    elif _active_provider == "sagemaker":
+        st.markdown("SageMaker endpoint &nbsp;&nbsp; ✅ Active")
+    elif _active_provider in ("gemini", "groq", "mistral", "nvidia"):
+        st.markdown("External fallback &nbsp;&nbsp;&nbsp; 🌐 Active")
+    else:
+        st.markdown("AWS Bedrock (Strands) &nbsp;&nbsp; ✅ Active")
+    st.markdown("Bedrock (direct Strands) &nbsp; ✅ Available")
     st.markdown("SageMaker &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ⚠️ Endpoint quota unavailable")
     st.markdown("---")
     st.markdown("**Fallback API Keys**")
     external_key = st.text_input("Gemini/External API Key", type="password", value=os.environ.get("SMS_EXTERNAL_API_KEY", ""), key="sms_external_api_key")
-    st.info("The agent architecture supports native AWS model providers through Strands. During this submission, the AWS account's model-inference quotas prevented live Bedrock/SageMaker inference, so the semantic-analysis provider is explicitly disclosed rather than silently simulated. The governance, enrichment, persistence, vector memory, and action layers remain AWS-native.")
-if not st.session_state.get("sms_external_api_key") and not os.environ.get("SMS_EXTERNAL_API_KEY"):
+    st.info("The agent architecture supports AWS-native model providers through Strands: Bedrock by default, or an optional AgentCore harness (SMS_LLM_PROVIDER=agentcore). The active provider is disclosed here and in the execution trace; with the AgentCore provider, analysis runs inside the AgentCore harness and is never silently simulated. External-fallback providers remain available by explicit choice. The governance, enrichment, persistence, vector memory, and action layers are AWS-native.")
+external_key_value = st.session_state.get("sms_external_api_key") or os.environ.get("SMS_EXTERNAL_API_KEY", "")
+if external_key_value:
+    os.environ["SMS_EXTERNAL_API_KEY"] = external_key_value
+    os.environ["GEMINI_API_KEY"] = external_key_value
+if _active_provider in ("gemini", "groq", "mistral", "nvidia") and not external_key_value:
     st.sidebar.warning("Enter a fallback API key under Technical details to run analysis.")
-else:
-    external_key = st.session_state.get("sms_external_api_key") or os.environ.get("SMS_EXTERNAL_API_KEY", "")
-    os.environ["SMS_EXTERNAL_API_KEY"] = external_key
-    os.environ["GEMINI_API_KEY"] = external_key
 
 if not pipeline:
     st.stop()

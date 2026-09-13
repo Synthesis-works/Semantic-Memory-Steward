@@ -56,18 +56,22 @@ See [`docs/architecture.md`](docs/architecture.md) for the full Mermaid diagram 
 | Content Reader | Amazon S3 | Fetch and decode text content |
 | Entity/PII Enrichment | Amazon Comprehend | `detect_entities` + `detect_pii_entities` |
 | Semantic Memory | Amazon DynamoDB | Persist per-document classification metadata |
-| Vector Memory | Amazon S3 Vectors | 768-dim cosine index for semantic similarity search |
+| Vector Memory | Amazon S3 Vectors | 1024-dim cosine index for semantic similarity search |
 | Action Engine | Amazon S3 | Copy-then-verify-then-delete for quarantine actions |
 | Infrastructure | AWS SAM / CloudFormation | DynamoDB table + S3 Vectors provisioning |
 
 ### LLM Provider Status
 
-> ⚠️ **Disclosure:** SMS natively supports **AWS Bedrock** and **Amazon SageMaker** as model providers through Strands. During this submission, the AWS account has two active restrictions:
->
-> - **Bedrock:** `ValidationException: Operation not allowed` (account-level restriction)
-> - **SageMaker:** Service Quota of 0 GPU instances for endpoint usage in `us-east-1`
->
-> Semantic analysis currently uses an **external LLM fallback**, explicitly disclosed in the dashboard System Status panel. All data persistence, enrichment, vector memory, and governance layers remain fully AWS-native.
+> **Bedrock is live and verified.** `amazon.nova-micro-v1:0` is authorized in
+> `us-east-1` and runs SMS's semantic classification through Strands
+> (`SMS_LLM_PROVIDER=bedrock`, the default). An optional **AgentCore Harness**
+> provider (`SMS_LLM_PROVIDER=agentcore` + `SMS_AGENTCORE_HARNESS_ARN`) runs the
+> same Strands classification step inside a managed harness (Nova Micro), verified
+> by a live non-mutating smoke test — see [`docs/agentcore.md`](docs/agentcore.md).
+> SageMaker's Service Quota is still 0 GPU instances for endpoint usage in
+> `us-east-1`. External (Gemini/Groq/Mistral/NVIDIA) providers remain available
+> by explicit choice. The active provider is disclosed in the dashboard System Panel
+> and in the execution trace; failures are reported honestly, never simulated.
 
 ---
 
@@ -157,8 +161,12 @@ SMS_VECTOR_INDEX=sms-embeddings
 AWS_PROFILE=your-profile
 AWS_DEFAULT_REGION=us-east-1
 
-# LLM provider (external fallback — see disclosure above)
-SMS_LLM_PROVIDER=gemini
+# LLM provider: bedrock (default, live) | agentcore | gemini/groq/mistral/nvidia
+SMS_LLM_PROVIDER=bedrock
+SMS_BEDROCK_MODEL_ID=amazon.nova-micro-v1:0
+# Optional AgentCore harness execution (see docs/agentcore.md):
+# SMS_LLM_PROVIDER=agentcore
+# SMS_AGENTCORE_HARNESS_ARN=arn:aws:bedrock-agentcore:us-east-1:<acct>:harness/<id>
 GEMINI_API_KEY=your-key-here
 ```
 
@@ -170,7 +178,7 @@ GEMINI_API_KEY=your-key-here
 pytest
 ```
 
-158 tests covering: pipeline idempotency, policy invariants, relationship detection, authorization boundaries, Comprehend enrichment logic, DynamoDB/S3 Vectors persistence, action engine safety, and human approval boundary.
+363 hermetic tests covering: pipeline idempotency, policy invariants, relationship detection, authorization boundaries, Comprehend enrichment logic, DynamoDB/S3 Vectors persistence, action engine safety, human approval boundary, Strands/Bedrock wiring, and the AgentCore harness adapter (no credentials or live AWS calls required).
 
 ---
 
