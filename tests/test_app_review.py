@@ -225,7 +225,8 @@ def test_charts_render_from_real_rows():
 
 def test_no_fake_trend_captions_in_app():
     import pathlib
-    text = pathlib.Path(r"D:\SMS\app.py").read_text(encoding="utf-8")
+
+    text = pathlib.Path(APP).read_text(encoding="utf-8")
     assert "↑" not in text
     assert "↓" not in text
     assert "last week" not in text.lower()
