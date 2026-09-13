@@ -15,7 +15,9 @@ from sms_agent.models import (
     SemanticMemoryRecord,
 )
 
-APP = r"D:\SMS\app.py"
+import os
+
+APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 TIMEOUT = 90
 MB = 1024 * 1024
 

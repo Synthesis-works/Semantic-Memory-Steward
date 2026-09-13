@@ -13,7 +13,9 @@ from streamlit.testing.v1 import AppTest
 from sms_agent.models import SemanticAnalysisResult
 from sms_agent.pipeline import SMSPipeline
 
-APP = r"D:\SMS\app.py"
+import os
+
+APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 KEY = "demo/a.txt"
 TIMEOUT = 90
 

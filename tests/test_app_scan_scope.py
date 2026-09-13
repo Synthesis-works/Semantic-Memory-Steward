@@ -19,7 +19,9 @@ from sms_agent.models import (
 )
 from sms_agent.pipeline import SMSPipeline
 
-APP = r"D:\SMS\app.py"
+import os
+
+APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 TIMEOUT = 120
 
 

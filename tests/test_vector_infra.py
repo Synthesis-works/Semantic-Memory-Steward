@@ -15,7 +15,7 @@ from sms_agent.embeddings import BedrockEmbeddingProvider, GeminiEmbeddingProvid
 from sms_agent.pipeline import SMSPipeline
 from sms_agent.models import FileMetadata, RetrievedContent, SemanticAnalysisResult
 
-APP = r"D:\SMS\app.py"
+APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 TIMEOUT = 90
 VECTOR_BUCKET = "sms-semantic-vectors-527557823928"
 

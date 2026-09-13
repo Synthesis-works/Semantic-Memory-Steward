@@ -16,7 +16,9 @@ from sms_agent.models import (
     SemanticMemoryRecord,
 )
 
-APP = r"D:\SMS\app.py"
+import os
+
+APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 KEY = "demo/custom-review.txt"
 URI = f"s3://bucket/{KEY}"
 TIMEOUT = 90
