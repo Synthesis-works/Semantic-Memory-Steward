@@ -33,6 +33,7 @@ from .models import (
     Embedding, SemanticAnalysisResult,
 )
 from .actions import ActionEngine
+from .trace import TraceRecorder
 
 log = logging.getLogger(__name__)
 
@@ -201,7 +202,20 @@ class SMSPipeline:
         if self.embedding_provider is None:
             return None
         try:
-            return self.embedding_provider.embed_text(text)
+            from .embed_prep import prepare_embedding_text
+            prepared = prepare_embedding_text(text)
+        except Exception as exc:
+            log.warning("Embedding preprocessor failed: %s", exc)
+            return None
+        if prepared.truncated:
+            log.info(
+                "Embedding input reduced %s -> %s chars via %s "
+                "(%s blocks collapsed)",
+                prepared.chars_before, prepared.chars_after, prepared.method,
+                prepared.collapsed_blocks,
+            )
+        try:
+            return self.embedding_provider.embed_text(prepared.text)
         except Exception as exc:
             log.warning("Embedding generation failed: %s", exc)
             return None
@@ -216,6 +230,7 @@ class SMSPipeline:
         skip_inference: bool = True,
         human_approved: bool = False,
         execute_action: bool = True,
+        trace: Optional[TraceRecorder] = None,
     ) -> Dict[str, Any]:
         """
         Process a single S3 object through the full pipeline.
@@ -226,6 +241,9 @@ class SMSPipeline:
             human_approved: Explicit human authorisation for mutations.
             execute_action: If False, compute recommendations but never
                             invoke ActionEngine mutations.
+            trace:          Optional TraceRecorder. When provided, each
+                            really-executed stage records an event;
+                            skipped stages record nothing.
 
         Memory behaviour:
             - First encounter: full analysis + embed + persist (vector first,
@@ -245,7 +263,18 @@ class SMSPipeline:
             )
 
         # 2. Content retrieval
-        content = self.reader.get_text(metadata)
+        try:
+            content = self.reader.get_text(metadata)
+        except Exception as exc:
+            if trace is not None:
+                trace.fail("CONTENT", f"Read {file_key}",
+                           f"Content read failed: {exc}", document=file_key)
+            raise
+        if trace is not None:
+            size = len(content.content) if content.content else 0
+            trace.succeed("CONTENT", f"Read {file_key}",
+                          f"Extracted document content ({size} chars)",
+                          document=file_key)
 
         # 3. Compute content hash from retrieved text (strongest identity)
         new_content_hash = _sha256(content.content) if content.content else None
@@ -291,14 +320,46 @@ class SMSPipeline:
         # 6. Semantic Analysis (with idempotency)
         enrichment = None
         if need_analysis:
-            analysis = self.agent.analyze_file(
-                file_key=file_key,
-                content=content.content,
-                metadata=metadata_dict,
-            )
-            
+            if trace is not None:
+                trace.record("AI_ANALYSIS", "Semantic analysis",
+                             "Analyzing document...", status="RUNNING",
+                             document=file_key, event_type="started")
+            try:
+                analysis = self.agent.analyze_file(
+                    file_key=file_key,
+                    content=content.content,
+                    metadata=metadata_dict,
+                    trace=trace,
+                )
+            except Exception as exc:
+                if trace is not None:
+                    trace.fail("AI_ANALYSIS", "Semantic analysis",
+                               f"Analysis failed: {exc}", document=file_key)
+                raise
+            if trace is not None:
+                trace.succeed(
+                    "AI_ANALYSIS", "Semantic analysis complete",
+                    f"Category: {analysis.category} · "
+                    f"Sensitivity: {analysis.sensitivity} · "
+                    f"Action: {analysis.recommended_action}",
+                    document=file_key)
+
             # Comprehend Enrichment
-            enrichment = self.comprehend.analyze_text(content.content)
+            try:
+                enrichment = self.comprehend.analyze_text(content.content)
+            except Exception as exc:
+                if trace is not None:
+                    trace.fail("ENRICHMENT", "AWS Comprehend",
+                               f"Enrichment failed: {exc}", document=file_key)
+                raise
+            if trace is not None:
+                persons = [ent for ent in enrichment.get("entities", [])
+                           if ent.get("type") == "PERSON"]
+                pii = "yes" if enrichment.get("pii_entities") else "none"
+                trace.succeed(
+                    "ENRICHMENT", "AWS Comprehend",
+                    f"Detected {len(persons)} PERSON entities · PII: {pii}",
+                    document=file_key)
             
             has_pii = bool(enrichment.get("pii_entities"))
             has_person = any(ent.get("type") == "PERSON" for ent in enrichment.get("entities", []))
@@ -325,6 +386,12 @@ class SMSPipeline:
                 reasoning="Reused from semantic memory cache (content unchanged).",
                 recommended_action=existing_record.recommended_action,
             )
+            if trace is not None:
+                trace.succeed(
+                    "AI_ANALYSIS", "Semantic analysis complete",
+                    f"Reused cached analysis (content unchanged) · "
+                    f"Category: {analysis.category}",
+                    document=file_key)
 
         # 7. Embedding (with model-version idempotency)
         vector: Optional[list] = None
@@ -350,6 +417,16 @@ class SMSPipeline:
         # 9. Importance + Policy
         importance = self.scorer.score(metadata, analysis, relationships)
         decision = self.policy.evaluate(analysis, metadata, relationships)
+        if trace is not None:
+            trace.succeed("IMPORTANCE", "Importance scorer",
+                          f"Score: {importance.score:.2f}", document=file_key)
+            first_reason = decision.reasons[0] if decision.reasons else ""
+            trace.succeed("POLICY", "Policy Engine",
+                          f"Decision: {decision.action} — {first_reason}",
+                          document=file_key)
+            if decision.requires_human_approval:
+                trace.wait("HUMAN_APPROVAL", "Human approval required",
+                           "SMS paused before taking action.", document=file_key)
 
         # 10. Persist memory (HIGH-3 ordering: vector first, then metadata)
         persisted = False
@@ -365,9 +442,20 @@ class SMSPipeline:
                 sensitivity=analysis.sensitivity,
                 importance_score=importance.score,
                 analysis_timestamp=datetime.now(timezone.utc),
-                embedding_model=current_model_id,
-                vector_id=vector_id,
+                # Retry-safety: only stamp the model/vector when an embedding
+                # actually exists. A failed embed keeps the previous state so
+                # the next pass re-attempts instead of marking the doc done.
+                embedding_model=current_model_id if vector is not None else None,
+                vector_id=vector_id if vector is not None else None,
                 recommended_action=analysis.recommended_action,
+                # Preserve a previously recorded human decision across
+                # re-analysis so rescans never silently drop review outcomes.
+                # Allowlisted: never propagate unexpected store values into
+                # the validated model.
+                human_decision=(existing_record.human_decision
+                                if existing_record is not None
+                                and existing_record.human_decision in ("KEEP",)
+                                else None),
             )
             embedding_obj: Optional[Embedding] = None
             if vector is not None:
@@ -381,6 +469,25 @@ class SMSPipeline:
                     },
                 )
             persisted = self._try_persist(record, embedding_obj)
+            if trace is not None and self.memory_store is not None:
+                dupes = sum(
+                    1 for r in relationships
+                    if r.relationship_type in ("DUPLICATE_CONFIRMED",
+                                               "DUPLICATE_CANDIDATE"))
+                dupe_note = (f" · {dupes} duplicate signal(s)"
+                             if dupes else "")
+                if persisted:
+                    trace.succeed("MEMORY", "Semantic memory",
+                                  f"Analysis persisted{dupe_note}",
+                                  document=file_key)
+                else:
+                    trace.fail("MEMORY", "Semantic memory",
+                               "Persistence failed (see logs)",
+                               document=file_key)
+        elif trace is not None and self.memory_store is not None:
+            trace.succeed("MEMORY", "Semantic memory",
+                          "Reused existing memory (content unchanged)",
+                          document=file_key)
 
         # 11. Action request
         requested_action = decision.action
@@ -411,14 +518,42 @@ class SMSPipeline:
             "memory": {
                 "reused_analysis": not need_analysis,
                 "reused_embedding": not need_embedding,
-                "embedding_model": current_model_id,
-                "vector_id": vector_id,
+                "embedding_model": current_model_id if vector is not None else None,
+                "vector_id": vector_id if vector is not None else None,
                 "persisted": persisted,
             },
         }
 
         if execute_action:
-            action_result = self.action_engine.execute(action_req)
+            if trace is not None:
+                trace.record("ACTION", "Action Engine",
+                             f"Executing {requested_action}...",
+                             status="RUNNING", document=file_key,
+                             event_type="started")
+            try:
+                action_result = self.action_engine.execute(action_req)
+            except Exception as exc:
+                if trace is not None:
+                    trace.fail("ACTION", "Action Engine",
+                               f"Execution raised: {exc}", document=file_key)
+                raise
+            if trace is not None:
+                action_status = action_result.status
+                if action_status in ("VERIFIED", "VERIFIED_NO_ACTION"):
+                    trace.succeed("ACTION", "Action Engine",
+                                  action_result.message, document=file_key,
+                                  event_type="verified")
+                elif action_status == "BLOCKED":
+                    trace.succeed("ACTION", "Action blocked by safety layer",
+                                  action_result.message, document=file_key,
+                                  event_type="blocked")
+                elif action_status == "PENDING_APPROVAL":
+                    trace.wait("ACTION", "Action awaiting approval",
+                               action_result.message, document=file_key,
+                               event_type="pending_approval")
+                else:
+                    trace.fail("ACTION", "Action Engine",
+                               action_result.message, document=file_key)
             result_dict["action_result"] = action_result.model_dump(mode="json")
             result_dict["status"] = "COMPLETED"
 

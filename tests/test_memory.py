@@ -8,6 +8,7 @@ import datetime
 import hashlib
 import json
 import io
+import os
 from decimal import Decimal
 from typing import List, Optional
 from unittest.mock import MagicMock, patch, call
@@ -453,6 +454,58 @@ class TestBedrockEmbeddingProvider:
         prov = BedrockEmbeddingProvider(bedrock_client=mock_client)
         vec = prov.embed_text("test text")
         assert vec == [0.4, 0.5]
+
+    def test_default_model_is_authorized_titan_v2(self):
+        prov = BedrockEmbeddingProvider()
+        assert prov.model_id == "amazon.titan-embed-text-v2:0"
+
+    def test_request_pins_1024_dimensions(self):
+        """The 1024-dim contract with the S3 Vectors index must be
+        explicit in the request, never reliant on service defaults."""
+        import json
+        captured = {}
+
+        class _Body:
+            def __init__(self, payload):
+                captured.update(json.loads(payload.decode("utf-8")))
+
+            def read(self):
+                return b"{}"
+
+        mock_client = MagicMock()
+        mock_client.invoke_model.side_effect = lambda **kwargs: (
+            captured.update(json.loads(kwargs["body"].decode("utf-8"))),
+            {"body": MagicMock(
+                read=lambda: json.dumps({"embedding": [0.1]}).encode())}
+        )[1]
+        prov = BedrockEmbeddingProvider(bedrock_client=mock_client)
+        prov.embed_text("test text")
+        assert captured["dimensions"] == 1024
+        assert captured["inputText"] == "test text"
+
+    def test_client_errors_become_embedding_errors(self):
+        from botocore.exceptions import ClientError
+        mock_client = MagicMock()
+        mock_client.invoke_model.side_effect = ClientError(
+            {"Error": {"Code": "ValidationException",
+                       "Message": "Operation not allowed"}},
+            "InvokeModel")
+        prov = BedrockEmbeddingProvider(bedrock_client=mock_client)
+        with pytest.raises(EmbeddingError, match="Bedrock embedding error"):
+            prov.embed_text("test text")
+
+    def test_uses_bedrock_runtime_in_default_region(self):
+        import json
+        mock_client = MagicMock()
+        mock_client.invoke_model.return_value = {
+            "body": MagicMock(read=lambda: json.dumps(
+                {"embedding": [0.1]}).encode())}
+        with patch("boto3.client", return_value=mock_client) as mock_boto:
+            prov = BedrockEmbeddingProvider()
+            prov.embed_text("test text")
+            mock_boto.assert_called_once_with(
+                "bedrock-runtime",
+                region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
 
 
 # ---------------------------------------------------------------------------

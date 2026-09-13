@@ -166,6 +166,7 @@ class DynamoDBMemoryStore:
                 embedding_model=item["embedding_model"],
                 vector_id=item["vector_id"],
                 recommended_action=item.get("recommended_action", "retain"),
+                human_decision=item.get("human_decision"),
             )
         except (KeyError, ValueError) as exc:
             raise RuntimeError(
@@ -193,12 +194,14 @@ class DynamoDBMemoryStore:
             "sensitivity": record.sensitivity,
             "importance_score": importance_decimal,  # Numeric, not string
             "analysis_timestamp": record.analysis_timestamp.isoformat(),
-            "embedding_model": record.embedding_model,
-            "vector_id": record.vector_id,
+            "embedding_model": record.embedding_model or "none",
+            "vector_id": record.vector_id or "",
             "recommended_action": record.recommended_action,
         }
         if record.content_hash:
             item["content_hash"] = record.content_hash
+        if record.human_decision:
+            item["human_decision"] = record.human_decision
 
         try:
             self._table().put_item(Item=item)
@@ -206,6 +209,28 @@ class DynamoDBMemoryStore:
             raise RuntimeError(
                 f"DynamoDB put_item failed for {record.s3_uri!r}: {exc}"
             ) from exc
+
+    def record_human_decision(self, s3_uri: str, decision: str) -> SemanticMemoryRecord:
+        """
+        Persist a human review outcome on an existing record.
+
+        Narrow UI-integration seam: the dashboard calls this after a human
+        approves KEEP so the decision survives reruns and rescans. Policy
+        output (recommended_action) is never modified here.
+        """
+        if decision != "KEEP":
+            raise ValueError(
+                f"record_human_decision: unsupported decision {decision!r} "
+                "(only 'KEEP' is recorded as a human decision)"
+            )
+        record = self.get_record(s3_uri)
+        if record is None:
+            raise ValueError(
+                f"record_human_decision: no record for {s3_uri!r}"
+            )
+        updated = record.model_copy(update={"human_decision": decision})
+        self.save_record(updated)
+        return updated
 
 
 # ---------------------------------------------------------------------------

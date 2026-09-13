@@ -38,6 +38,58 @@ def test_agent_invalid_json(mock_call):
         with pytest.raises(ValueError, match="Failed to parse agent response"):
             agent.analyze_file("mock-file.txt", "Some content", {})
 
+
+def _mock_gemini_response(mock_urlopen):
+    """Wire a valid Gemini-shaped response into the urlopen mock."""
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps({
+        "candidates": [{
+            "content": {
+                "parts": [{
+                    "text": json.dumps({
+                        "key": "test.txt",
+                        "category": "technical",
+                        "sensitivity": "public",
+                        "importance_score": 0.2,
+                        "confidence": 0.85,
+                        "reasoning": "Mocked Gemini Response",
+                        "recommended_action": "retain"
+                    })
+                }]
+            }
+        }]
+    }).encode('utf-8')
+    mock_response.__enter__.return_value = mock_response
+    mock_urlopen.return_value = mock_response
+
+
+@patch.dict(os.environ, {"SMS_LLM_PROVIDER": "gemini", "SMS_EXTERNAL_API_KEY": "AQ.test-new-format-key"})
+@patch("urllib.request.urlopen")
+def test_gemini_new_format_key_uses_query_param(mock_urlopen):
+    """AQ.*-format AI Studio keys must also use the ?key= transport.
+
+    Regression: these were briefly misrouted to Bearer (which Google
+    rejects for API keys); verified live that ?key= is correct.
+    """
+    _mock_gemini_response(mock_urlopen)
+    agent = SMSAgent()
+    agent.analyze_file("test.txt", "content")
+    req = mock_urlopen.call_args[0][0]
+    assert "key=AQ.test-new-format-key" in req.full_url
+    assert req.get_header("Authorization") is None
+
+
+@patch.dict(os.environ, {"SMS_LLM_PROVIDER": "gemini", "SMS_EXTERNAL_API_KEY": "AIza-test-api-key"})
+@patch("urllib.request.urlopen")
+def test_gemini_api_key_uses_query_param(mock_urlopen):
+    """Classic AIza.* API keys keep using the ?key= transport."""
+    _mock_gemini_response(mock_urlopen)
+    agent = SMSAgent()
+    agent.analyze_file("test.txt", "content")
+    req = mock_urlopen.call_args[0][0]
+    assert "key=AIza-test-api-key" in req.full_url
+    assert req.get_header("Authorization") is None
+
 def test_strands_agent_import():
     """Verify that the real strands Agent can be imported."""
     from strands import Agent
@@ -204,4 +256,39 @@ def test_agent_gemini_missing_key():
     agent = SMSAgent()
     with pytest.raises(ValueError, match="SMS_EXTERNAL_API_KEY is not set"):
         agent.analyze_file("test.txt", "content")
+
+
+def test_translate_strands_tool_use_event():
+    """A real Strands tool-use event becomes a trace event with the tool name."""
+    from sms_agent.agent import translate_strands_event
+    from sms_agent.trace import TraceRecorder
+    rec = TraceRecorder()
+    translate_strands_event(rec, "demo/a.txt",
+                            current_tool_use={"name": "s3_read"})
+    assert len(rec.events) == 1
+    assert rec.events[0].stage == "AI_ANALYSIS"
+    assert "s3_read" in rec.events[0].title
+
+
+def test_translate_strands_ignores_non_tool_events():
+    """Model output/reasoning/lifecycle noise must never enter the trace."""
+    from sms_agent.agent import translate_strands_event
+    from sms_agent.trace import TraceRecorder
+    rec = TraceRecorder()
+    translate_strands_event(rec, "demo/a.txt", data="token stream...")
+    translate_strands_event(rec, "demo/a.txt", reasoningText="private thought")
+    translate_strands_event(rec, "demo/a.txt", current_tool_use={})
+    translate_strands_event(None, "demo/a.txt",
+                            current_tool_use={"name": "x"})
+    assert rec.events == []
+
+
+def test_translate_strands_never_raises():
+    """Tracing must not break inference, whatever the SDK sends."""
+    from sms_agent.agent import translate_strands_event
+    from sms_agent.trace import TraceRecorder
+    rec = TraceRecorder()
+    translate_strands_event(rec, "demo/a.txt", event=None,
+                            current_tool_use="not-a-dict")
+    assert rec.events == []
 
