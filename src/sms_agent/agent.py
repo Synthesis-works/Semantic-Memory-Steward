@@ -130,6 +130,21 @@ class SMSAgent:
             finally:
                 self.agent.callback_handler = original_handler
                 
+        # AgentCore: run the Strands classification step inside an existing
+        # AgentCore Harness (invoked from SMS; the harness is never created
+        # here). Same product contract as the Strands/Bedrock path.
+        if provider == "agentcore":
+            from .agentcore import AgentCoreError, analyze_file_with_harness
+            try:
+                return analyze_file_with_harness(
+                    file_key,
+                    content,
+                    metadata,
+                    system_prompt=self.SYSTEM_PROMPT,
+                )
+            except AgentCoreError as e:
+                raise ValueError(f"AgentCore/Strands inference failed: {e}")
+
         # Fallback manual parsing for other external test providers
         if provider == "gemini":
             response_text = self._call_gemini(prompt)
