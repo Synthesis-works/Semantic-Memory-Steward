@@ -97,14 +97,23 @@ EXACTLY ONE document (`demo/service-config.json`) through `SMSAgent.analyze_file
 | Idle resources | Only the harness definition + role exist; runtime session ends after the invocation (no always-on compute). |
 | Teardown | `aws bedrock-agentcore-control delete-harness --harness-id <id>`; `aws iam delete-role-policy` + `aws iam delete-role`. |
 
-## Environment finding (pre-existing, NOT caused by AgentCore work)
+## Environment verification (read-only; S3-Vectors service namespace)
 
-The S3 vector bucket `sms-semantic-vectors-527557823928` (referenced by the app's
-default `SMS_VECTOR_BUCKET`) is currently **absent** from the account (only
-`semantic-memory-steward-dev-527557823928` exists). Today's smoke test performed no
-writes and could not have affected it; this is independent drift to investigate
-separately (the vector memory write path will fail until it is resolved). No bucket
-was created or deleted as part of this work.
+The vector-memory S3 bucket `sms-semantic-vectors-527557823928` (referenced by the
+app's default `SMS_VECTOR_BUCKET`) **exists and is live** — earlier "absent" claims
+for it in this file were **false**. The bucket lives in the **S3-Vectors platform
+namespace** (service `s3vectors`), not in the plain-S3 namespace, so ordinary
+`aws s3` / `get-bucket-location` lookups cannot see it. Re-verified live today with
+read-only, non-mutating calls (nothing created, deleted, or written):
+
+- `aws s3vectors list-vector-buckets --account-id 527557823928 --region us-east-1`
+  → bucket present, ARN
+  `arn:aws:s3vectors:us-east-1:527557823928:bucket/sms-semantic-vectors-527557823928`.
+- Vector index + vectors confirmed present in the S3-Vectors service namespace.
+- DynamoDB table `sms-semantic-memory` present (28 rows, vector write path intact).
+
+This finding was added accidentally in the original branch; it is not real drift and
+nothing here caused it. No bucket was created or deleted as part of this work.
 
 ## Deployment command sequence (reproducible record)
 
