@@ -19,6 +19,7 @@ import os
 import uuid
 from typing import Dict, List, Optional, Sequence
 
+from pydantic import ValidationError
 from .models import SemanticAnalysisResult
 
 HARNESS_ARN_ENV = "SMS_AGENTCORE_HARNESS_ARN"
@@ -74,7 +75,11 @@ def _stream_to_text(stream: Sequence[Dict]) -> str:
 
 
 def _parse_result_text(text: str, file_key: str) -> SemanticAnalysisResult:
-    """Parse assistant JSON text into SemanticAnalysisResult (gemini-style)."""
+    """Parse assistant JSON text into SemanticAnalysisResult (gemini-style).
+
+    Any malformed/empty/non-conforming output raises AgentCoreError so the
+    caller reports an honest failure instead of returning a fake result.
+    """
     clean_text = text.strip()
     if clean_text.startswith("```json"):
         clean_text = clean_text[7:]
@@ -82,11 +87,19 @@ def _parse_result_text(text: str, file_key: str) -> SemanticAnalysisResult:
         clean_text = clean_text[3:]
     if clean_text.endswith("```"):
         clean_text = clean_text[:-3]
-    data = json.loads(clean_text.strip())
+    try:
+        data = json.loads(clean_text.strip())
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise AgentCoreError(f"Malformed JSON in harness response: {exc}") from exc
     if not isinstance(data, dict):
         raise AgentCoreError("Harness response was not a JSON object")
     data["key"] = file_key
-    return SemanticAnalysisResult(**data)
+    try:
+        return SemanticAnalysisResult(**data)
+    except ValidationError as exc:
+        raise AgentCoreError(
+            f"Harness response failed SemanticAnalysisResult validation: {exc}"
+        ) from exc
 
 
 def build_messages(file_key: str, content: str,
@@ -143,11 +156,18 @@ def analyze_file_with_harness(
     if len(session_id) < 33:
         raise AgentCoreError("runtime_session_id must be at least 33 characters")
 
-    response = client.invoke_harness(
-        harnessArn=harness_arn,
-        runtimeSessionId=session_id,
-        messages=build_messages(file_key, content, metadata),
-        systemPrompt=[{"text": system_prompt}],
-    )
-    text = _stream_to_text(response.get("stream"))
+    try:
+        response = client.invoke_harness(
+            harnessArn=harness_arn,
+            runtimeSessionId=session_id,
+            messages=build_messages(file_key, content, metadata),
+            systemPrompt=[{"text": system_prompt}],
+        )
+        text = _stream_to_text(response.get("stream"))
+    except AgentCoreError:
+        raise
+    except Exception as exc:
+        raise AgentCoreError(
+            f"AgentCore invoke_harness failed for {harness_arn}: {exc}"
+        ) from exc
     return _parse_result_text(text, file_key)

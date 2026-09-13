@@ -8,6 +8,7 @@ SMS_LLM_PROVIDER=agentcore. No AWS resources are created or invoked.
 import os
 
 import pytest
+from botocore.exceptions import ClientError
 from unittest.mock import patch
 
 import sms_agent.agentcore as agentcore
@@ -147,3 +148,122 @@ def test_agent_provider_requires_arn_env():
     with pytest.raises(ValueError) as exc:
         SMSAgent().analyze_file("demo/q3.txt", "content")
     assert "SMS_AGENTCORE_HARNESS_ARN" in str(exc.value)
+
+
+def test_parse_malformed_json_raises_agentcore_error():
+    with pytest.raises(AgentCoreError) as exc:
+        agentcore._parse_result_text("{not json", "demo/q3.txt")
+    assert "Malformed JSON" in str(exc.value)
+
+
+def test_parse_empty_text_raises_agentcore_error():
+    with pytest.raises(AgentCoreError) as exc:
+        agentcore._parse_result_text("", "demo/q3.txt")
+    assert "Malformed JSON" in str(exc.value)
+
+
+def test_parse_schema_mismatch_raises_agentcore_error():
+    invalid = '{"category":"technical","importance_score":"not-a-number"}'
+    with pytest.raises(AgentCoreError) as exc:
+        agentcore._parse_result_text(invalid, "demo/q3.txt")
+    assert "validation" in str(exc.value)
+
+
+def _client_error(operation_name="InvokeHarness"):
+    return ClientError(
+        {
+            "Error": {
+                "Code": "AccessDeniedException",
+                "Message": "not authorized",
+            }
+        },
+        operation_name,
+    )
+
+
+def test_invoke_authz_failure_raises_agentcore_error():
+    class FailingClient:
+        def invoke_harness(self, **kwargs):
+            raise _client_error()
+
+    with pytest.raises(AgentCoreError) as exc:
+        analyze_file_with_harness(
+            "demo/q3.txt",
+            "content",
+            harness_arn=HARNESS,
+            client=FailingClient(),
+        )
+    assert "failed" in str(exc.value)
+    assert "AccessDenied" in str(exc.value)
+
+
+def test_invoke_network_failure_raises_agentcore_error():
+    class FailingClient:
+        def invoke_harness(self, **kwargs):
+            raise ConnectionError("connection reset")
+
+    with pytest.raises(AgentCoreError):
+        analyze_file_with_harness(
+            "demo/q3.txt",
+            "content",
+            harness_arn=HARNESS,
+            client=FailingClient(),
+        )
+
+
+def test_no_gemini_fallback_on_agentcore_failure():
+    os.environ["SMS_LLM_PROVIDER"] = "agentcore"
+    os.environ["SMS_AGENTCORE_HARNESS_ARN"] = HARNESS
+
+    class FailingClient:
+        def invoke_harness(self, **kwargs):
+            raise _client_error()
+
+    with patch("sms_agent.agentcore._default_client", return_value=FailingClient()), \
+         patch.object(SMSAgent, "_call_gemini", side_effect=AssertionError("must not fall back to gemini")):
+        with pytest.raises(ValueError) as exc:
+            SMSAgent().analyze_file("demo/q3.txt", "content")
+    assert "AgentCore" in str(exc.value)
+    assert "AccessDenied" in str(exc.value)
+
+
+def test_fresh_session_id_per_invocation():
+    calls = []
+
+    class RecordingClient:
+        def invoke_harness(self, **kwargs):
+            calls.append(kwargs["runtimeSessionId"])
+            return {"stream": [_text_delta(VALID_JSON)]}
+
+    analyze_file_with_harness(
+        "demo/q3.txt", "c", harness_arn=HARNESS, client=RecordingClient()
+    )
+    analyze_file_with_harness(
+        "demo/q3.txt", "c", harness_arn=HARNESS, client=RecordingClient()
+    )
+    assert len(calls) == 2
+    assert calls[0] != calls[1]
+    assert all(len(session_id) >= 33 for session_id in calls)
+
+
+def test_agentcore_provider_records_trace_before_invoking():
+    from sms_agent.trace import TraceRecorder
+
+    os.environ["SMS_LLM_PROVIDER"] = "agentcore"
+    os.environ["SMS_AGENTCORE_HARNESS_ARN"] = HARNESS
+    calls = {"count": 0}
+
+    class FakeClient:
+        def invoke_harness(self, **kwargs):
+            calls["count"] += 1
+            return {"stream": [_text_delta(VALID_JSON)]}
+
+    trace = TraceRecorder()
+    with patch("sms_agent.agentcore._default_client", return_value=FakeClient()):
+        agent = SMSAgent()
+        result = agent.analyze_file("demo/q3.txt", "Q3 content", trace=trace)
+
+    assert result.key == "demo/q3.txt"
+    assert calls["count"] == 1
+    titles = [e.title for e in trace.events]
+    assert "AgentCore analysis" in titles
