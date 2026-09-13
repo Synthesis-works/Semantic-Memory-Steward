@@ -3,8 +3,6 @@ from typing import Optional, Literal, List
 from pydantic import BaseModel, Field, field_validator
 from .economics import EconomicAssessment
 
-from .economics import EconomicAssessment
-
 class SemanticAnalysisResult(BaseModel):
     """Structured result of semantic analysis on a file."""
     
