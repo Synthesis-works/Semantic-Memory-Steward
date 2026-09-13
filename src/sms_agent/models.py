@@ -2,6 +2,8 @@ from datetime import datetime
 from typing import Optional, Literal, List
 from pydantic import BaseModel, Field, field_validator
 
+from .economics import EconomicAssessment
+
 class SemanticAnalysisResult(BaseModel):
     """Structured result of semantic analysis on a file."""
     
@@ -21,6 +23,14 @@ class SemanticAnalysisResult(BaseModel):
     reasoning: str = Field(description="Short reasoning for the classification and scores.")
     recommended_action: Literal["retain", "archive", "review", "delete"] = Field(
         description="The recommended governance action. Destructive actions should require human approval."
+    )
+    economic_assessment: Optional["EconomicAssessment"] = Field(
+        default=None,
+        description=("Optional, purely informational economic-gate assessment "
+                     "(labeled ESTIMATE). Layered ON TOP of the policy/safety/"
+                     "approval decision: it can never override policy, authorize "
+                     "an action, bypass human approval, or unlock mutations. "
+                     "Back-compat: always defaults to None."),
     )
 
     @field_validator("recommended_action", mode="before")
