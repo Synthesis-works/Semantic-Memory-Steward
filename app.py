@@ -3,6 +3,7 @@ import time
 from dotenv import load_dotenv
 import streamlit as st
 import pandas as pd
+from pandas.io.formats.style import Styler
 from botocore.exceptions import ClientError
 from sms_agent.pipeline import SMSPipeline
 from sms_agent.actions import ActionRequest, ActionEngine
@@ -1020,7 +1021,7 @@ if records:
     df = pd.DataFrame(records)
     display_df = df[["Filename", "Category", "Sensitivity", "Importance", "Policy", "Status"]].copy()
     # Use a Pandas Styler for theme-aware table rendering (dark-first, light fallback)
-    def _style_table(styler: pd.io.formats.style.Styler) -> pd.io.formats.style.Styler:
+    def _style_table(styler: Styler) -> Styler:
         # Dark-first styling; light mode remains readable
         styler.set_table_styles([
             {"selector": "th", "props": [("background-color", "#1e293b"), ("color", "#f1f5f9"), ("border", "1px solid #334155"), ("font-weight", "600"), ("font-size", "0.82rem"), ("text-transform", "uppercase"), ("letter-spacing", "0.04em")]},
