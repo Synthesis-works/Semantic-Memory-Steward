@@ -328,6 +328,70 @@ def build_review_model(
     }
 
 
+# Policy/sensitivity color mapping for consistent chart theming
+_POLICY_COLORS = {
+    "KEEP": "#059669",
+    "RETAIN": "#059669",
+    "SAFE": "#16a34a",
+    "ARCHIVE": "#2563eb",
+    "REVIEW": "#d97706",
+    "QUARANTINE": "#dc2626",
+    "TRASH": "#dc2626",
+    "DELETE": "#dc2626",
+    "OTHER": "#64748b",
+}
+
+_SENSITIVITY_COLORS = {
+    "confidential": "#dc2626",
+    "internal": "#d97706",
+    "public": "#059669",
+    "unknown": "#64748b",
+}
+
+_CATEGORY_COLORS = [
+    "#2563eb", "#059669", "#d97706", "#7c3aed", "#db2777",
+    "#0891b2", "#ea580c", "#65a30d", "#9333ea", "#e11d48",
+]
+
+
+def _apply_theme_config(chart: alt.Chart, title: str, height: int) -> alt.Chart:
+    """Apply consistent theme configuration to charts."""
+    return chart.properties(
+        title=alt.TitleParams(
+            text=title,
+            fontSize=13,
+            fontWeight=600,
+            color="#0f172a",
+            subtitleColor="#64748b",
+            subtitleFontSize=11,
+        ),
+        height=height,
+    ).configure(
+        axis=alt.AxisConfig(
+            labelFontSize=11,
+            titleFontSize=12,
+            titleFontWeight=600,
+            labelColor="#334155",
+            titleColor="#1e293b",
+            gridColor="#e2e8f0",
+            domainColor="#cbd5e1",
+            tickColor="#cbd5e1",
+        ),
+        legend=alt.LegendConfig(
+            labelFontSize=11,
+            titleFontSize=12,
+            titleFontWeight=600,
+            labelColor="#334155",
+            titleColor="#1e293b",
+            orient="bottom",
+        ),
+        view=alt.ViewConfig(
+            stroke="transparent",
+        ),
+        background="#ffffff",
+    )
+
+
 def render_donut(box, counts: Dict[str, int], title: str) -> bool:
     """Compact donut from real counts. Returns False when nothing to show."""
     items = [{"label": label, "value": value}
@@ -335,11 +399,28 @@ def render_donut(box, counts: Dict[str, int], title: str) -> bool:
     if not items:
         return False
     df = pd.DataFrame(items)
-    chart = alt.Chart(df).mark_arc(innerRadius=45).encode(
-        theta="value",
-        color=alt.Color("label", legend=alt.Legend(title=None)),
-        tooltip=["label", "value"],
-    ).properties(title=title, height=190)
+    # Determine color mapping based on label types (policy vs sensitivity)
+    labels = [item["label"] for item in items]
+    is_policy = any(l.upper() in _POLICY_COLORS for l in labels)
+    is_sensitivity = any(l.lower() in _SENSITIVITY_COLORS for l in labels)
+    if is_policy:
+        color_scale = alt.Scale(
+            domain=labels,
+            range=[_POLICY_COLORS.get(l.upper(), "#64748b") for l in labels],
+        )
+    elif is_sensitivity:
+        color_scale = alt.Scale(
+            domain=labels,
+            range=[_SENSITIVITY_COLORS.get(l.lower(), "#64748b") for l in labels],
+        )
+    else:
+        color_scale = alt.Scale(domain=labels, range=_CATEGORY_COLORS)
+    chart = alt.Chart(df).mark_arc(innerRadius=50, stroke="#ffffff", strokeWidth=2).encode(
+        theta=alt.Theta("value:Q", stack=True),
+        color=alt.Color("label:N", scale=color_scale, legend=alt.Legend(title=None, orient="bottom", labelFontSize=11)),
+        tooltip=[alt.Tooltip("label:N", title=title), alt.Tooltip("value:Q", title="Documents", format=",")],
+    )
+    chart = _apply_theme_config(chart, title, height=200)
     box.altair_chart(chart, use_container_width=True)
     return True
 
@@ -350,12 +431,19 @@ def render_category_bars(box, counts: Dict[str, int], title: str) -> bool:
              for label, value in counts.items() if value > 0]
     if not items:
         return False
+    # Sort by value descending for readability
+    items.sort(key=lambda x: x["value"], reverse=True)
     df = pd.DataFrame(items)
-    chart = alt.Chart(df).mark_bar().encode(
-        x=alt.X("value", title="documents"),
-        y=alt.Y("label", title=None, sort="-x"),
-        tooltip=["label", "value"],
-    ).properties(title=title, height=max(120, 40 * len(items)))
+    # Assign consistent colors
+    colors = [_CATEGORY_COLORS[i % len(_CATEGORY_COLORS)] for i in range(len(items))]
+    color_scale = alt.Scale(domain=[item["label"] for item in items], range=colors)
+    chart = alt.Chart(df).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
+        x=alt.X("value:Q", title="Documents", axis=alt.Axis(grid=True, gridColor="#e2e8f0")),
+        y=alt.Y("label:N", title=None, sort="-x", axis=alt.Axis(labelLimit=200)),
+        color=alt.Color("label:N", scale=color_scale, legend=None),
+        tooltip=[alt.Tooltip("label:N", title="Category"), alt.Tooltip("value:Q", title="Documents", format=",")],
+    )
+    chart = _apply_theme_config(chart, title, height=max(160, 38 * len(items)))
     box.altair_chart(chart, use_container_width=True)
     return True
 
@@ -375,14 +463,20 @@ def render_impact_chart(box, points: List[Dict[str, Any]]) -> bool:
     if not rows:
         return False
     df = pd.DataFrame(rows)
-    chart = alt.Chart(df).mark_line(point=True).encode(
-        x=alt.X("month", title="Month (projected)"),
-        y=alt.Y("bytes", title="Storage used (bytes)"),
-        color=alt.Color("series", legend=alt.Legend(title=None)),
-        tooltip=["month", "series", "bytes"],
-    ).properties(
-        title="Storage growth: unmanaged vs SMS-managed (Projected)",
-        height=220)
+    # Format bytes for axis
+    chart = alt.Chart(df).mark_line(point=alt.OverlayMarkDef(filled=True, size=60), strokeWidth=2.5).encode(
+        x=alt.X("month:O", title="Month (projected)", axis=alt.Axis(labelAngle=0)),
+        y=alt.Y("bytes:Q", title="Storage used (GB)", axis=alt.Axis(format=".2s", gridColor="#e2e8f0")),
+        color=alt.Color("series:N",
+                        scale=alt.Scale(domain=["Without SMS", "With SMS"], range=["#dc2626", "#059669"]),
+                        legend=alt.Legend(title=None, orient="bottom")),
+        tooltip=[
+            alt.Tooltip("month:O", title="Month"),
+            alt.Tooltip("series:N", title="Scenario"),
+            alt.Tooltip("bytes:Q", title="Storage (GB)", format=".2f"),
+        ],
+    )
+    chart = _apply_theme_config(chart, "Storage growth: unmanaged vs SMS-managed (Projected)", height=260)
     box.altair_chart(chart, use_container_width=True)
     return True
 
