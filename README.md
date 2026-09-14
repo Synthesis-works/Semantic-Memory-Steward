@@ -8,6 +8,12 @@ The key design principle: **the AI understands; the deterministic policy engine 
 
 ---
 
+## Live Demo
+
+**Try SMS live:** https://semantic-memory-steward.streamlit.app/
+
+---
+
 ## The Problem
 
 As an S3 bucket grows, it becomes a triage nightmare:
@@ -45,6 +51,8 @@ scan → understand → enrich → relate → score → govern → approve → a
 ![Semantic Memory Steward dashboard](docs/assets/dashboard.png)
 
 The dashboard is the human-facing workspace: it runs full scans, inspects per-document semantic analysis with Comprehend evidence, surfaces the human-approval queue whenever autonomy would halt, tracks live activity, and reports projected storage impact.
+
+**Live dashboard:** https://semantic-memory-steward.streamlit.app/
 
 ---
 
@@ -249,6 +257,16 @@ SMS_BEDROCK_EMBEDDING_MODEL=amazon.titan-embed-text-v2:0
 # SMS_EMBEDDING_PROVIDER=gemini
 # GEMINI_API_KEY=your-key-here
 ```
+
+---
+
+## Deployment
+
+The current demo is deployed on **Streamlit Community Cloud** from this repository.
+
+**Live app:** https://semantic-memory-steward.streamlit.app/
+
+For local execution, see [Setup](#setup).
 
 ---
 
