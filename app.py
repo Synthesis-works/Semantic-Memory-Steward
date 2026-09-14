@@ -42,6 +42,63 @@ load_dotenv()
 
 st.set_page_config(page_title="Semantic Memory Steward", layout="wide", initial_sidebar_state="expanded")
 
+# ---- SMS product polish — restrained enterprise palette (CSS only) ----
+st.markdown("""
+<style>
+/* Layout */
+.block-container { padding-top: 1.1rem; max-width: 1280px; }
+[data-testid="stSidebar"] { background: #f8fafc; border-right: 1px solid #e2e8f0; }
+hr.sms-divider { border: none; border-top: 1px solid #e2e8f0; margin: 20px 0; }
+
+/* Hero */
+.sms-hero { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px 22px; margin-bottom: 6px; }
+.sms-hero h1 { font-size: 1.55rem; margin: 0 0 5px 0; letter-spacing: -0.02em; color: #0f172a; line-height: 1.2; }
+.sms-hero p { margin: 0; color: #475569; font-size: 0.94rem; line-height: 1.5; }
+.sms-workflow { color: #64748b; font-size: 0.78rem; letter-spacing: .06em; font-weight: 600; margin-top: 8px; }
+
+/* Policy badges — same treatment everywhere */
+.sms-badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: .04em; border: 1px solid; line-height: 1.7; vertical-align: middle; }
+.sms-badge-keep { background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
+.sms-badge-archive { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
+.sms-badge-review { background: #fffbeb; color: #92400e; border-color: #fde68a; }
+.sms-badge-quarantine { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+.sms-badge-safe { background: #f0fdf4; color: #14532d; border-color: #bbf7d0; }
+
+/* Attention hero */
+.sms-attention { border-left: 3px solid #f59e0b !important; }
+
+/* KPI cards — rely on st.container(border=True) but tighten metric display */
+[data-testid="stMetric"] { background: transparent; }
+[data-testid="stMetricLabel"] { color: #475569; font-size: 0.78rem; letter-spacing: .04em; text-transform: uppercase; font-weight: 600; }
+[data-testid="stMetricValue"] { color: #0f172a; }
+
+/* Table / inspector polish */
+.sms-caption { color: #64748b; font-size: 0.82rem; }
+.sms-section { margin-top: 8px; }
+
+/* Subtle muted text */
+.sms-muted { color: #64748b; }
+</style>
+""", unsafe_allow_html=True)
+
+
+def _policy_badge(policy: str) -> str:
+    """One consistent visual treatment for policy states (KEEP/ARCHIVE/REVIEW/QUARANTINE)."""
+    key = (policy or "").strip().lower()
+    klass = {
+        "keep": "sms-badge-keep",
+        "retain": "sms-badge-keep",
+        "safe": "sms-badge-safe",
+        "archive": "sms-badge-archive",
+        "review": "sms-badge-review",
+        "quarantine": "sms-badge-quarantine",
+        "trash": "sms-badge-quarantine",
+        "delete": "sms-badge-quarantine",
+    }.get(key, "sms-badge-review")
+    label = (policy or "—").strip().upper() or "—"
+    return f'<span class="sms-badge {klass}">{label}</span>'
+
+
 def build_embedding_provider():
     """Select the embedding provider for the memory pipeline.
 
@@ -321,6 +378,13 @@ def render_action_controls(pipeline, rec, selected_file, prefix):
         else:
             st.error("Action Paused: Human Approval Required")
 
+        # Approval panel — visually obvious human-in-the-loop boundary
+        with st.container(border=True):
+            st.markdown(f"**Current Policy:** {_policy_badge(raw.recommended_action)}", unsafe_allow_html=True)
+            st.caption("SMS has paused before taking action because this document requires human approval under the current policy.")
+            st.markdown("**Action Paused:** Human Approval Required")
+            st.markdown("**Your Decision:** KEEP / QUARANTINE")
+
         st.markdown("**YOUR DECISION**")
         action_map = st.session_state.get("sms_selected_action") or {}
         default = get_doc_action(action_map, selected_file)
@@ -367,6 +431,9 @@ def render_action_controls(pipeline, rec, selected_file, prefix):
             f"- Category {raw.category}\n"
             "- Policy permits ARCHIVE for low-risk documents."
         )
+        with st.container(border=True):
+            st.markdown(f"**Current Policy:** {_policy_badge(raw.recommended_action)}", unsafe_allow_html=True)
+            st.caption("SMS can archive this document to the archive workspace prefix after you confirm.")
         st.markdown("**YOU ARE ABOUT TO ARCHIVE**")
         st.write(f"**{selected_file}**")
         st.write(f"- Copy to `archive/{selected_file}`, verify the copy, "
@@ -418,8 +485,7 @@ def render_review_page(pipeline, inventory, records):
 
     st.markdown("REVIEWING")
     st.header(f"📄 {key}")
-    st.write(f"**{raw.sensitivity.upper()} · IMPORTANCE {round(raw.importance_score, 2)}"
-             f" · POLICY: {raw.recommended_action.upper()}**")
+    st.markdown(f"**{raw.sensitivity.upper()} · IMPORTANCE {round(raw.importance_score, 2)} · POLICY: {_policy_badge(raw.recommended_action)}**", unsafe_allow_html=True)
     econ = getattr(raw, "economic_assessment", None)
     if econ is not None:
         st.caption(f"Econ ESTIMATE: {econ.status.replace('_', ' ')} "
@@ -480,30 +546,33 @@ def render_review_page(pipeline, inventory, records):
         ["Overview", "Content", "Analysis", "Relationships"])
 
     with tab_overview:
-        st.subheader("Document Summary")
-        st.write(f"**Category:** {model['category']}")
-        st.write(f"**Sensitivity:** {model['sensitivity']}")
-        st.write(f"**Importance:** {model['importance']}")
-        st.write(f"**Policy:** {model['policy']}")
-        st.write(f"**Status:** {model['status']}")
-        if status == "PENDING_REVIEW":
-            st.warning(
-                "WHY SMS STOPPED — "
-                f"SMS classified this document as {model['sensitivity']}. "
-                "Human judgment is required before any governance action.")
-        st.subheader("Evidence")
-        for line in model["evidence"]:
-            st.write(f"- {line}")
-        st.info(model["memory_note"])
-        st.markdown("**SMS RECOMMENDATION**")
-        st.write(f"**{model['recommendation']['headline']}**")
-        for reason in model["recommendation"]["why"]:
-            st.write(f"- {reason}")
-        st.write(f"**Action:** {model['recommendation']['action']}")
-        if status == "PENDING_REVIEW":
-            st.write("**Alternative:** QUARANTINE — "
-                     f"Move the document to the isolated trash/quarantine "
-                     f"location (`trash/{key}`).")
+        with st.container(border=True):
+            st.subheader("Document Summary")
+            st.write(f"**Category:** {model['category']}")
+            st.write(f"**Sensitivity:** {model['sensitivity']}")
+            st.write(f"**Importance:** {model['importance']}")
+            st.markdown(f"**Policy:** {_policy_badge(model['policy'])}", unsafe_allow_html=True)
+            st.write(f"**Status:** {model['status']}")
+            if status == "PENDING_REVIEW":
+                st.warning(
+                    "WHY SMS STOPPED — "
+                    f"SMS classified this document as {model['sensitivity']}. "
+                    "Human judgment is required before any governance action.")
+        with st.container(border=True):
+            st.subheader("Evidence")
+            for line in model["evidence"]:
+                st.write(f"- {line}")
+            st.info(model["memory_note"])
+        with st.container(border=True):
+            st.markdown("**SMS RECOMMENDATION**")
+            st.write(f"**{model['recommendation']['headline']}**")
+            for reason in model["recommendation"]["why"]:
+                st.write(f"- {reason}")
+            st.write(f"**Action:** {model['recommendation']['action']}")
+            if status == "PENDING_REVIEW":
+                st.write("**Alternative:** QUARANTINE — "
+                         f"Move the document to the isolated trash/quarantine "
+                         f"location (`trash/{key}`).")
 
     with tab_content:
         st.subheader("Content Preview")
@@ -540,27 +609,26 @@ def render_review_page(pipeline, inventory, records):
         else:
             st.write("No duplicate signals detected.")
 
-    st.markdown("---")
-    st.subheader("Execute Action")
-    st.write("HUMAN DECISION REQUIRED — SMS has paused before taking action "
-             "because this document requires human approval under the "
-             "current policy. SMS investigated, recommended, and stopped. "
-             "You are now making the final governance decision.")
+    st.markdown('<hr class="sms-divider" />', unsafe_allow_html=True)
+    with st.container(border=True):
+        st.subheader("Execute Action")
+        st.caption("HUMAN DECISION REQUIRED · SMS investigated, recommended, and stopped. You are now making the final governance decision.")
     render_action_controls(pipeline, rec, key, prefix="sms_review")
 
     outcome = result_for_doc(st.session_state.get("sms_action_results"), key)
     if outcome:
-        st.markdown("---")
+        st.markdown('<hr class="sms-divider" />', unsafe_allow_html=True)
         render_result_panel(outcome)
 
     trace_events = [e for e in get_trace_recorder().events
                     if e.document == key]
     if trace_events:
-        st.markdown("---")
+        st.markdown('<hr class="sms-divider" />', unsafe_allow_html=True)
         st.subheader("What happened")
         st.markdown("\n\n".join(render_trace_lines(trace_events)))
 
 st.sidebar.title("SMS STATUS")
+st.sidebar.caption("System · observability — subordinate to the workspace")
 st.sidebar.markdown("────────────────────────────")
 st.sidebar.markdown("Strands Agent &nbsp;&nbsp; ✅ Active")
 st.sidebar.markdown("S3 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ✅ Connected")
@@ -569,6 +637,7 @@ st.sidebar.markdown("S3 Vectors &nbsp;&nbsp;&nbsp; ✅ Connected")
 st.sidebar.markdown("Comprehend &nbsp;&nbsp;&nbsp; ✅ Connected")
 st.sidebar.markdown("")
 st.sidebar.markdown(_llm_provider_summary())
+st.sidebar.caption("Backend frozen · UI polish only")
 
 with st.sidebar.expander("Technical details (providers, quotas, Bedrock)"):
     _active_provider = os.getenv("SMS_LLM_PROVIDER", "bedrock").strip().lower()
@@ -612,34 +681,73 @@ if st.session_state.get("sms_view") == "review":
     render_review_page(pipeline, inventory, records)
     st.stop()
 
-st.title("Semantic Memory Steward (SMS)")
+# ---- Product header ----
+st.markdown("""
+<div class="sms-hero">
+  <h1>Semantic Memory Steward (SMS)</h1>
+  <p>Autonomous memory governance for your team's documents — analyzes, classifies, and applies policy, pausing for human judgment when required.</p>
+  <div class="sms-workflow">ANALYZE → DECIDE → ACT · The dashboard is your human approval and oversight interface</div>
+</div>
+""", unsafe_allow_html=True)
 
-if st.button("▶ Run Full SMS Scan", type="primary", key="sms_run_scan"):
-    st.session_state["sms_scan_requested"] = True
-    st.session_state["sms_trace_events"] = TraceRecorder().to_dicts()
-    st.session_state["sms_trace_active"] = True
-    st.session_state["sms_scan_done"] = False
-    st.rerun()
-st.caption("Scans all current workspace documents.")
+hdr_col1, hdr_col2 = st.columns([3, 1])
+with hdr_col2:
+    if st.button("▶ Run Full SMS Scan", type="primary", key="sms_run_scan", use_container_width=True):
+        st.session_state["sms_scan_requested"] = True
+        st.session_state["sms_trace_events"] = TraceRecorder().to_dicts()
+        st.session_state["sms_trace_active"] = True
+        st.session_state["sms_scan_done"] = False
+        st.rerun()
+with hdr_col1:
+    st.caption("Scans all current workspace documents. Existing analyses are reused when content is unchanged.")
 
+# ---- KPI cards — visually distinct bordered containers, real values only ----
 if records:
     summary = summarize_workspace(records, last_scan=st.session_state.get("sms_last_scan"))
     st.markdown("### What SMS found in your workspace")
-    scol1, scol2, scol3 = st.columns(3)
-    scol1.metric("Documents analyzed", summary["analyzed"])
-    scol2.metric("Needs your attention", summary["needs_attention"])
-    scol3.metric("Safe to keep", summary["safe_to_keep"])
-    scol4, scol5, scol6 = st.columns(3)
-    scol4.metric("Cleanup candidates", summary["cleanup_candidates"])
-    scol5.metric("Actions completed", summary["actions_completed"])
-    scol6.metric("Awaiting approval", summary["awaiting_approval"])
+    st.caption("Live values from inventory + semantic memory — no fabricated numbers.")
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        with st.container(border=True):
+            st.metric("Documents analyzed", summary["analyzed"])
+            st.caption("in workspace")
+    with k2:
+        with st.container(border=True):
+            st.metric("Needs your attention", summary["needs_attention"])
+            st.caption("· requires judgment")
+    with k3:
+        with st.container(border=True):
+            st.metric("Safe to keep", summary["safe_to_keep"])
+            st.caption("· no action needed")
+    with k4:
+        with st.container(border=True):
+            st.metric("Cleanup candidates", summary["cleanup_candidates"])
+            st.caption("· archive-eligible")
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        with st.container(border=True):
+            st.metric("Actions completed", summary["actions_completed"])
+    with s2:
+        with st.container(border=True):
+            st.metric("Awaiting approval", summary["awaiting_approval"])
+    with s3:
+        with st.container(border=True):
+            dup_val = summary["duplicates"]
+            st.metric("Duplicate signals", dup_val if dup_val is not None else "—")
+            st.caption("from last scan" if dup_val is not None else "run a scan to check")
     if summary["duplicates"] is None:
         st.caption("Duplicates detected: unknown — run a scan to check.")
     else:
         st.caption(f"Duplicates detected (last scan): {summary['duplicates']}")
+else:
+    summary = {"analyzed": 0, "needs_attention": 0, "safe_to_keep": 0, "cleanup_candidates": 0, "actions_completed": 0, "awaiting_approval": 0, "duplicates": None}
 
-activity_box = st.empty()
-render_activity(activity_box)
+# ---- Live activity — collapsed by default, compact summary outside ----
+_compact = f"Scan activity · {summary['analyzed']} documents" if records else "Scan activity · workspace empty"
+st.caption(_compact)
+with st.expander("Live activity", expanded=False):
+    _live_box = st.empty()
+    render_activity(_live_box)
 
 if st.session_state.get("sms_scan_requested", False):
     st.session_state["sms_scan_requested"] = False
@@ -648,7 +756,7 @@ if st.session_state.get("sms_scan_requested", False):
     scan_rec.succeed("DISCOVERY", "S3 Scanner",
                      f"Found {len(workspace_items)} active workspace document(s)")
     save_trace_recorder(scan_rec)
-    render_activity(activity_box)
+    render_activity(_live_box)
     scanned, scan_errors, duplicate_hits = 0, [], 0
     scan_start = time.time()
     for item in workspace_items:
@@ -662,7 +770,7 @@ if st.session_state.get("sms_scan_requested", False):
             except Exception as e:
                 scan_errors.append(f"{item.key}: {e}")
         save_trace_recorder(scan_rec)
-        render_activity(activity_box)
+        render_activity(_live_box)
     st.session_state["sms_last_scan"] = {
         "analyzed": scanned, "errors": scan_errors, "duplicates": duplicate_hits,
     }
@@ -670,7 +778,7 @@ if st.session_state.get("sms_scan_requested", False):
     st.session_state["sms_trace_active"] = False
     st.session_state["sms_scan_done"] = True
     save_trace_recorder(scan_rec)
-    render_activity(activity_box)
+    render_activity(_live_box)
     st.cache_data.clear()
     st.rerun()
 
@@ -682,12 +790,29 @@ if last_scan:
         st.info(f"Last scan: analyzed {last_scan.get('analyzed', 0)} document(s), "
                 f"duplicate signals {last_scan.get('duplicates', 0)}.")
 
+# ---- Storage & Cost Impact — improved hierarchy, tiny demo values de-emphasized ----
 if records and summary["analyzed"] > 0:
     managed_sizes = [item.size_bytes for item in inventory
                      if is_managed_document(item.key)]
     impact = compute_impact(records, managed_sizes)
+    st.markdown('<hr class="sms-divider" />', unsafe_allow_html=True)
     st.markdown("### STORAGE & COST IMPACT")
-    st.caption("See what SMS can save by keeping your active workspace focused.")
+    st.caption("What SMS can save by keeping your active workspace focused — current measured values first, projections second.")
+    # Current measured
+    with st.container(border=True):
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Current active storage", format_bytes(impact["total_bytes"]))
+            st.caption("measured · active workspace")
+        with m2:
+            st.metric("Potential storage reduction", format_bytes(impact["potential_bytes"]))
+            st.caption("if cleanup candidates are archived")
+        with m3:
+            st.metric("Less active storage", f"{impact['potential_pct']:.0f}%")
+            st.caption("potential reduction")
+        with m4:
+            st.metric("Relocated already", format_bytes(impact["managed_bytes"]))
+            st.caption("in trash / archive")
     hcol1, hcol2 = st.columns([2, 1])
     with hcol1:
         render_impact_chart(
@@ -700,44 +825,42 @@ if records and summary["analyzed"] > 0:
         else:
             st.caption("No ARCHIVE-policy documents yet — the SMS-managed "
                        "line matches baseline until cleanup candidates appear.")
+        st.caption(f"{impact['doc_count']} documents · {len(sorted({row['Filename'].rsplit('.', 1)[-1].upper() for row in records if '.' in row['Filename']}))} "
+                   f"format(s): {', '.join(sorted({row['Filename'].rsplit('.', 1)[-1].upper() for row in records if '.' in row['Filename']}))}")
     with hcol2:
-        st.markdown("**WHY SMS IS WORTH IT**")
-        st.metric("Current active storage",
-                  format_bytes(impact["total_bytes"]))
-        st.metric("Potential storage reduction",
-                  format_bytes(impact["potential_bytes"]))
-        st.metric("Less active storage", f"{impact['potential_pct']:.0f}%")
-        st.metric("Documents for review", impact["review_docs"])
-        st.metric("Cleanup candidates", len(impact["potential_docs"]))
-        monthly_cost = impact["monthly_cost_usd"]
-        monthly_savings = impact["monthly_savings_usd"]
-        st.write(f"**Estimated monthly S3 cost:** "
-                 f"${monthly_cost:.2f}" if monthly_cost >= 0.01
-                 else f"**Estimated monthly S3 cost:** ${monthly_cost:.6f}")
-        st.write(f"**Estimated monthly savings:** "
-                 f"${monthly_savings:.2f}" if monthly_savings >= 0.01
-                 else f"**Estimated monthly savings:** ${monthly_savings:.6f}")
-        st.caption("Illustrative S3 Standard pricing — not your AWS bill.")
-        if impact["managed_bytes"] > 0:
-            st.caption(f"Relocated out of the active workspace: "
-                       f"{format_bytes(impact['managed_bytes'])} "
-                       f"(trash/archive — still stored until retention "
-                       f"removes it).")
-        scenario = scale_scenario(impact["potential_pct"])
-        st.caption(f"Illustrative scale scenario (not a measurement): the "
-                   f"same {impact['potential_pct']:.0f}% applied to a 100 GB "
-                   f"workspace could save "
-                   f"{format_bytes(scenario['saved_bytes'])} "
-                   f"(~${scenario['monthly_savings_usd']:.2f}/mo).")
+        with st.container(border=True):
+            st.markdown("**Cost — illustrative only**")
+            monthly_cost = impact["monthly_cost_usd"]
+            monthly_savings = impact["monthly_savings_usd"]
+            st.write(f"**Estimated monthly S3 cost:** "
+                     f"${monthly_cost:.2f}" if monthly_cost >= 0.01
+                     else f"**Estimated monthly S3 cost:** ${monthly_cost:.6f}")
+            st.caption("S3 Standard list price — not your AWS bill. Tiny demo workspaces show fractions of a cent.")
+            st.write(f"**Estimated monthly savings:** "
+                     f"${monthly_savings:.2f}" if monthly_savings >= 0.01
+                     else f"**Estimated monthly savings:** ${monthly_savings:.6f}")
+            st.caption("If archive-eligible documents were moved. Actual savings depend on retention.")
+        with st.container(border=True):
+            st.markdown("**Scale illustration — not a measurement**")
+            scenario = scale_scenario(impact["potential_pct"])
+            st.caption(f"The same {impact['potential_pct']:.0f}% applied to a 100 GB "
+                       f"workspace could save "
+                       f"{format_bytes(scenario['saved_bytes'])} "
+                       f"(~${scenario['monthly_savings_usd']:.2f}/mo).")
         st.info("SMS doesn't delete blindly. It analyzes first, applies "
                 "policy, and asks for human approval when required.")
-    formats = sorted({row["Filename"].rsplit(".", 1)[-1].upper()
-                      for row in records if "." in row["Filename"]})
-    st.caption(f"{impact['doc_count']} documents · {len(formats)} "
-               f"format(s): {', '.join(formats)}")
+        st.caption("Potential / projected figures are labeled as such. Small demo dollar values are shown at full precision so they don't visually dominate.")
 
 if records and summary["analyzed"] > 0:
+    st.markdown('<hr class="sms-divider" />', unsafe_allow_html=True)
     st.markdown("### Workspace analytics")
+    st.caption("Policy, sensitivity, and category — same semantic treatment everywhere.")
+    # Legend for policy states
+    st.markdown(
+        f"{_policy_badge('KEEP')} {_policy_badge('ARCHIVE')} {_policy_badge('REVIEW')} {_policy_badge('QUARANTINE')}"
+        " &nbsp; <span class='sms-muted' style='font-size:0.82rem;'>· REVIEW and QUARANTINE signal greater caution than KEEP. Color never replaces the label.</span>",
+        unsafe_allow_html=True,
+    )
     ch1, ch2, ch3 = st.columns(3)
     render_donut(ch1, policy_counts(records), "Policy decisions")
     render_donut(ch2, sensitivity_counts(records), "Sensitivity")
@@ -745,28 +868,47 @@ if records and summary["analyzed"] > 0:
 
 if records:
     queue = pending_reviews(records)
+    st.markdown('<hr class="sms-divider" />', unsafe_allow_html=True)
     if queue:
-        st.markdown("### Needs your attention — SMS paused here because it needs you")
-        for row in queue:
-            qcol1, qcol2 = st.columns([3, 1])
-            qcol1.write(f"**{row['Filename']}** — {row['Policy']} · "
-                        f"{row['Sensitivity']} · {row['Importance']}")
-            if qcol2.button("Review", key=f"sms_inspect_{row['Filename']}"):
-                st.session_state["sms_selected_file"] = row["Filename"]
-                st.session_state["sms_review_key"] = row["Filename"]
-                st.session_state["sms_view"] = "review"
-                st.rerun()
+        with st.container(border=True):
+            st.markdown("### Needs your attention — SMS paused here because it needs you")
+            st.caption("ANALYZE → DECIDE → ACT · SMS analyzes the workspace, identifies documents requiring judgment, and pauses when policy requires human review.")
+            for row in queue:
+                qcol1, qcol2 = st.columns([3, 1])
+                with qcol1:
+                    st.markdown(
+                        f"**{row['Filename']}** — {_policy_badge(row['Policy'])} &nbsp; {row['Sensitivity']} · {row['Importance']}",
+                        unsafe_allow_html=True,
+                    )
+                if qcol2.button("Review", key=f"sms_inspect_{row['Filename']}"):
+                    st.session_state["sms_selected_file"] = row["Filename"]
+                    st.session_state["sms_review_key"] = row["Filename"]
+                    st.session_state["sms_view"] = "review"
+                    st.rerun()
     else:
         st.success("✓ Nothing needs your attention")
 
     st.markdown("### Recent scan results")
+    st.caption("Filenames · policy state · sensitivity · importance — policy badges use the same treatment as everywhere else.")
     df = pd.DataFrame(records)
-    st.dataframe(df[["Filename", "Category", "Sensitivity", "Importance", "Policy", "Status"]], use_container_width=True)
+    st.dataframe(
+        df[["Filename", "Category", "Sensitivity", "Importance", "Policy", "Status"]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Filename": st.column_config.TextColumn("Filename", width="large"),
+            "Policy": st.column_config.TextColumn("Policy", width="small"),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+            "Sensitivity": st.column_config.TextColumn("Sensitivity", width="small"),
+            "Importance": st.column_config.NumberColumn("Importance", format="%.2f"),
+        },
+    )
 else:
     st.info("No documents found in the demo prefix.")
 
-st.markdown("---")
+st.markdown('<hr class="sms-divider" />', unsafe_allow_html=True)
 st.header("Document Inspector & Approval Queue")
+st.caption("Select a document to see SMS's recommendation, the evidence it used, and the approval controls.")
 
 selected_file = st.selectbox("Select a file to inspect:", [r["Filename"] for r in records], key="sms_selected_file")
 
@@ -784,35 +926,39 @@ if selected_file:
             human_decision=getattr(raw, "human_decision", None),
             key=selected_file,
         )
-        st.subheader("SMS recommendation")
-        st.write(f"**{recommendation['headline']}**")
-        for reason in recommendation["why"]:
-            st.write(f"- {reason}")
-        st.write(f"**Action:** {recommendation['action']}")
+        with st.container(border=True):
+            st.subheader("SMS recommendation")
+            st.markdown(f"**{recommendation['headline']}**")
+            for reason in recommendation["why"]:
+                st.write(f"- {reason}")
+            st.write(f"**Action:** {recommendation['action']}")
         st.markdown("---")
         colA, colB = st.columns(2)
         
         with colA:
-            st.subheader("Semantic Evidence")
-            st.write(f"**Category:** {raw.category}")
-            st.write(f"**Sensitivity:** {raw.sensitivity}")
-            st.write(f"**Importance Score:** {raw.importance_score}")
-            st.write("**Reasoning:** Analysis reasoning is not persisted with the semantic memory record.")
-            if getattr(raw, "human_decision", None):
-                st.info(f"**Human decision:** {raw.human_decision} — recorded in semantic memory.")
+            with st.container(border=True):
+                st.subheader("Semantic Evidence")
+                st.write(f"**Category:** {raw.category}")
+                st.write(f"**Sensitivity:** {raw.sensitivity}")
+                st.write(f"**Importance Score:** {raw.importance_score}")
+                st.write("**Reasoning:** Analysis reasoning is not persisted with the semantic memory record.")
+                if getattr(raw, "human_decision", None):
+                    st.info(f"**Human decision:** {raw.human_decision} — recorded in semantic memory.")
             
-            st.markdown("#### AWS Comprehend Enrichment")
-            try:
-                content = pipeline.reader.get_text(rec["metadata"])
-                enrichment = pipeline.comprehend.analyze_text(content.content)
-                has_pii = bool(enrichment.get("pii_entities"))
-                persons = list(set([ent.get("text", "") for ent in enrichment.get("entities", []) if ent.get("type") == "PERSON"]))
-                st.write(f"**Entities: PERSON**: {', '.join(persons) if persons else 'None'}")
-                st.write(f"**PII detected**: {'yes' if has_pii else 'no'}")
-            except Exception as e:
-                st.warning(f"Could not load Comprehend signals: {e}")
+            with st.container(border=True):
+                st.markdown("#### AWS Comprehend Enrichment")
+                try:
+                    content = pipeline.reader.get_text(rec["metadata"])
+                    enrichment = pipeline.comprehend.analyze_text(content.content)
+                    has_pii = bool(enrichment.get("pii_entities"))
+                    persons = list(set([ent.get("text", "") for ent in enrichment.get("entities", []) if ent.get("type") == "PERSON"]))
+                    st.write(f"**Entities: PERSON**: {', '.join(persons) if persons else 'None'}")
+                    st.write(f"**PII detected**: {'yes' if has_pii else 'no'}")
+                except Exception as e:
+                    st.warning(f"Could not load Comprehend signals: {e}")
             
         with colB:
-            st.subheader("Approval & Action")
-            st.write(f"**Current Policy:** {raw.recommended_action.upper()}")
-            render_action_controls(pipeline, rec, selected_file, prefix="sms_inspect")
+            with st.container(border=True):
+                st.subheader("Approval & Action")
+                st.markdown(f"**Current Policy:** {_policy_badge(raw.recommended_action)}", unsafe_allow_html=True)
+                render_action_controls(pipeline, rec, selected_file, prefix="sms_inspect")
