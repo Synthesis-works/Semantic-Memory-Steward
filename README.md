@@ -34,6 +34,14 @@ Policy Engine (deterministic safety)
 
 ---
 
+## Dashboard
+
+![Semantic Memory Steward dashboard](docs/assets/dashboard.png)
+
+The dashboard is the human-facing workspace for semantic analysis, policy decisions, approval/oversight, and storage impact.
+
+---
+
 ## Why Strands?
 
 Strands Agents provides a **clean model-provider boundary** — the same SMS pipeline can route to AWS Bedrock, Amazon SageMaker, or an external provider, simply by changing configuration. This means:
