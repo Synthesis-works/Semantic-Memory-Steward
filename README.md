@@ -46,7 +46,9 @@ Strands Agents provides a **clean model-provider boundary** — the same SMS pip
 
 ## Architecture
 
-See [`docs/architecture.md`](docs/architecture.md) for the full Mermaid diagram and data flow.
+![Semantic Memory Steward architecture](docs/assets/architecture.png)
+
+See [`docs/architecture.md`](docs/architecture.md) for the full Mermaid source and data flow.
 
 ### AWS-Native Components (Verified Live)
 
