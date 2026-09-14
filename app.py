@@ -67,6 +67,9 @@ hr.sms-divider { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
 /* Attention hero */
 .sms-attention { border-left: 3px solid #f59e0b !important; }
 
+/* Service badges — secondary to policy badges */
+.sms-service-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .04em; border: 1px solid; line-height: 1.7; vertical-align: middle; margin-right: 6px; background: #e2e8f0; color: #334155; border-color: #cbd5e1; }
+
 /* KPI cards — rely on st.container(border=True) but tighten metric display */
 [data-testid="stMetric"] { background: transparent; }
 [data-testid="stMetricLabel"] { color: #475569; font-size: 0.78rem; letter-spacing: .04em; text-transform: uppercase; font-weight: 600; }
@@ -90,6 +93,7 @@ hr.sms-divider { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
     .sms-badge-review { background: #422006; color: #fde68a; border-color: #92400e; }
     .sms-badge-quarantine { background: #450a0a; color: #fecaca; border-color: #991b1b; }
     .sms-badge-safe { background: #052e16; color: #bbf7d0; border-color: #14532d; }
+    .sms-service-badge { background: #1e293b; color: #94a3b8; border-color: #334155; }
     [data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #334155; }
     hr.sms-divider { border-top: 1px solid #334155; }
     [data-testid="stMetricLabel"] { color: #94a3b8; }
@@ -104,6 +108,25 @@ hr.sms-divider { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
 #MainMenu { visibility: hidden !important; }
 footer { visibility: hidden !important; }
 header[data-testid="stHeader"] { background: transparent !important; }
+
+/* Dark-mode dataframe / table — ensure readable in both themes */
+@media (prefers-color-scheme: dark) {
+    [data-testid="stDataFrame"] { background: #0f172a !important; }
+    [data-testid="stDataFrame"] div[role="grid"] { background: #1e293b !important; border-color: #334155 !important; }
+    [data-testid="stDataFrame"] [role="rowheader"],
+    [data-testid="stDataFrame"] [role="columnheader"],
+    [data-testid="stDataFrame"] [role="gridcell"] { background: #1e293b !important; color: #f1f5f9 !important; border-color: #334155 !important; }
+    [data-testid="stDataFrame"] [data-baseweb="table"] { background: #1e293b !important; }
+    [data-testid="stDataFrame"] [data-baseweb="table"] * { color: #f1f5f9 !important; border-color: #334155 !important; }
+    [data-testid="stDataFrame"] .stDataFrameContainer { background: #0f172a !important; }
+}
+
+/* Light-mode dataframe fallback — ensure no regressions */
+@media (prefers-color-scheme: light) {
+    [data-testid="stDataFrame"] [role="gridcell"],
+    [data-testid="stDataFrame"] [role="columnheader"],
+    [data-testid="stDataFrame"] [role="rowheader"] { color: #0f172a !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -123,6 +146,32 @@ def _policy_badge(policy: str) -> str:
     }.get(key, "sms-badge-review")
     label = (policy or "—").strip().upper() or "—"
     return f'<span class="sms-badge {klass}">{label}</span>'
+
+
+def _service_badge(stage: str) -> str:
+    """Map trace stage to AWS/service component badge."""
+    mapping = {
+        "DISCOVERY": "S3",
+        "CONTENT": "S3",
+        "AI_ANALYSIS": "BEDROCK",
+        "ENRICHMENT": "COMPREHEND",
+        "IMPORTANCE": "POLICY",
+        "POLICY": "POLICY",
+        "MEMORY": "DYNAMODB",
+        "ACTION": "ACTION",
+        "HUMAN_APPROVAL": "ACTION",
+    }
+    label = mapping.get(stage, "—")
+    return f'<span class="sms-service-badge">{label}</span>'
+
+
+# Marker icons for trace rendering (mirrored from trace.py for local rendering)
+_MARKERS = {
+    "RUNNING": "◉",
+    "SUCCESS": "✓",
+    "WAITING": "⏸",
+    "FAILED": "✗",
+}
 
 
 def build_embedding_provider():
@@ -300,10 +349,33 @@ def render_activity(box):
     if not rec.events and not active and not done:
         box.empty()
         return
+
+    # Group events by document for scannability
+    from collections import defaultdict
+    by_doc = defaultdict(list)
+    for e in rec.events:
+        doc = e.document or "—"
+        by_doc[doc].append(e)
+
     parts = ["### SMS LIVE ACTIVITY"]
     if active and not rec.events:
         parts.append("● SMS is working...")
-    parts.extend(render_trace_lines(rec.events))
+
+    for doc, events in by_doc.items():
+        if doc != "—":
+            parts.append(f"\n**{doc}**")
+        for event in events:
+            marker = _MARKERS.get(event.status, "•")
+            badge = _service_badge(event.stage)
+            # Give governance events visual emphasis
+            if event.stage in ("POLICY", "HUMAN_APPROVAL"):
+                line = f"**{marker} {badge} {event.title}**"
+            else:
+                line = f"{marker} {badge} {event.title}"
+            if event.detail:
+                line += f"\n  {event.detail}"
+            parts.append(line)
+
     if active:
         parts.append("● SMS is working...")
     if done and not active:
