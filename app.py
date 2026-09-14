@@ -48,7 +48,7 @@ st.markdown("""
 /* Layout */
 .block-container { padding-top: 1.1rem; max-width: 1280px; }
 [data-testid="stSidebar"] { background: #f8fafc; border-right: 1px solid #e2e8f0; }
-hr.sms-divider { border: none; border-top: 1px solid #e2e8f0; margin: 20px 0; }
+hr.sms-divider { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
 
 /* Hero */
 .sms-hero { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px 22px; margin-bottom: 6px; }
@@ -78,6 +78,32 @@ hr.sms-divider { border: none; border-top: 1px solid #e2e8f0; margin: 20px 0; }
 
 /* Subtle muted text */
 .sms-muted { color: #64748b; }
+
+/* Dark-mode compatibility — ensure custom colors work in both themes */
+@media (prefers-color-scheme: dark) {
+    .sms-hero { background: #1e293b; border-color: #334155; }
+    .sms-hero h1 { color: #f1f5f9; }
+    .sms-hero p { color: #94a3b8; }
+    .sms-workflow { color: #64748b; }
+    .sms-badge-keep { background: #064e3b; color: #a7f3d0; border-color: #065f46; }
+    .sms-badge-archive { background: #1e3a5f; color: #bfdbfe; border-color: #1e40af; }
+    .sms-badge-review { background: #422006; color: #fde68a; border-color: #92400e; }
+    .sms-badge-quarantine { background: #450a0a; color: #fecaca; border-color: #991b1b; }
+    .sms-badge-safe { background: #052e16; color: #bbf7d0; border-color: #14532d; }
+    [data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #334155; }
+    hr.sms-divider { border-top: 1px solid #334155; }
+    [data-testid="stMetricLabel"] { color: #94a3b8; }
+    [data-testid="stMetricValue"] { color: #f1f5f9; }
+    .sms-caption { color: #94a3b8; }
+    .sms-muted { color: #94a3b8; }
+    .stContainer[data-testid="stContainer"] { border-color: #334155 !important; }
+}
+
+/* Streamlit chrome reduction — safe, minimal */
+[data-testid="stToolbar"] { visibility: hidden !important; }
+#MainMenu { visibility: hidden !important; }
+footer { visibility: hidden !important; }
+header[data-testid="stHeader"] { background: transparent !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -868,7 +894,6 @@ if records and summary["analyzed"] > 0:
 
 if records:
     queue = pending_reviews(records)
-    st.markdown('<hr class="sms-divider" />', unsafe_allow_html=True)
     if queue:
         with st.container(border=True):
             st.markdown("### Needs your attention — SMS paused here because it needs you")
@@ -886,7 +911,7 @@ if records:
                     st.session_state["sms_view"] = "review"
                     st.rerun()
     else:
-        st.success("✓ Nothing needs your attention")
+        st.info("✓ Nothing needs your attention — SMS checked the workspace and currently needs no human intervention.")
 
     st.markdown("### Recent scan results")
     st.caption("Filenames · policy state · sensitivity · importance — policy badges use the same treatment as everywhere else.")
