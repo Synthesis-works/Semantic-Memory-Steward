@@ -3,7 +3,6 @@ import time
 from dotenv import load_dotenv
 import streamlit as st
 import pandas as pd
-from pandas.io.formats.style import Styler
 from botocore.exceptions import ClientError
 from sms_agent.pipeline import SMSPipeline
 from sms_agent.actions import ActionRequest, ActionEngine
@@ -1020,19 +1019,8 @@ if records:
     st.caption("Filenames · policy state · sensitivity · importance — policy badges use the same treatment as everywhere else.")
     df = pd.DataFrame(records)
     display_df = df[["Filename", "Category", "Sensitivity", "Importance", "Policy", "Status"]].copy()
-    # Use a Pandas Styler for theme-aware table rendering (dark-first, light fallback)
-    def _style_table(styler: Styler) -> Styler:
-        # Dark-first styling; light mode remains readable
-        styler.set_table_styles([
-            {"selector": "th", "props": [("background-color", "#1e293b"), ("color", "#f1f5f9"), ("border", "1px solid #334155"), ("font-weight", "600"), ("font-size", "0.82rem"), ("text-transform", "uppercase"), ("letter-spacing", "0.04em")]},
-            {"selector": "td", "props": [("background-color", "#0f172a"), ("color", "#f1f5f9"), ("border", "1px solid #334155"), ("font-size", "0.86rem")]},
-            {"selector": "tr:nth-child(even) td", "props": [("background-color", "#111827")]},
-            {"selector": "table", "props": [("border-collapse", "collapse"), ("width", "100%")]},
-        ])
-        return styler
-    styled = display_df.style.pipe(_style_table).format({"Importance": "{:.2f}"})
     st.dataframe(
-        styled,
+        display_df,
         use_container_width=True,
         hide_index=True,
         column_config={

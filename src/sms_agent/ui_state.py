@@ -355,14 +355,14 @@ _CATEGORY_COLORS = [
 
 
 def _apply_theme_config(chart: alt.Chart, title: str, height: int) -> alt.Chart:
-    """Apply consistent theme configuration to charts."""
+    """Apply consistent dark theme configuration to charts."""
     return chart.properties(
         title=alt.TitleParams(
             text=title,
             fontSize=13,
             fontWeight=600,
-            color="#0f172a",
-            subtitleColor="#64748b",
+            color="#f1f5f9",
+            subtitleColor="#94a3b8",
             subtitleFontSize=11,
         ),
         height=height,
@@ -371,34 +371,35 @@ def _apply_theme_config(chart: alt.Chart, title: str, height: int) -> alt.Chart:
             labelFontSize=11,
             titleFontSize=12,
             titleFontWeight=600,
-            labelColor="#334155",
-            titleColor="#1e293b",
-            gridColor="#e2e8f0",
-            domainColor="#cbd5e1",
-            tickColor="#cbd5e1",
+            labelColor="#94a3b8",
+            titleColor="#cbd5e1",
+            gridColor="#334155",
+            domainColor="#475569",
+            tickColor="#475569",
         ),
         legend=alt.LegendConfig(
             labelFontSize=11,
             titleFontSize=12,
             titleFontWeight=600,
-            labelColor="#334155",
-            titleColor="#1e293b",
+            labelColor="#cbd5e1",
+            titleColor="#f1f5f9",
             orient="bottom",
         ),
         view=alt.ViewConfig(
             stroke="transparent",
         ),
-        background="#ffffff",
+        background="#0f172a",
     )
 
 
 def render_donut(box, counts: Dict[str, int], title: str) -> bool:
-    """Compact donut from real counts. Returns False when nothing to show."""
+    """Compact donut from real counts with center metric. Returns False when nothing to show."""
     items = [{"label": label, "value": value}
              for label, value in counts.items() if value > 0]
     if not items:
         return False
     df = pd.DataFrame(items)
+    total = sum(item["value"] for item in items)
     # Determine color mapping based on label types (policy vs sensitivity)
     labels = [item["label"] for item in items]
     is_policy = any(l.upper() in _POLICY_COLORS for l in labels)
@@ -415,12 +416,26 @@ def render_donut(box, counts: Dict[str, int], title: str) -> bool:
         )
     else:
         color_scale = alt.Scale(domain=labels, range=_CATEGORY_COLORS)
-    chart = alt.Chart(df).mark_arc(innerRadius=50, stroke="#ffffff", strokeWidth=2).encode(
+
+    # Base donut chart
+    donut = alt.Chart(df).mark_arc(innerRadius=60, stroke="#0f172a", strokeWidth=3).encode(
         theta=alt.Theta("value:Q", stack=True),
-        color=alt.Color("label:N", scale=color_scale, legend=alt.Legend(title=None, orient="bottom", labelFontSize=11)),
-        tooltip=[alt.Tooltip("label:N", title=title), alt.Tooltip("value:Q", title="Documents", format=",")],
-    )
-    chart = _apply_theme_config(chart, title, height=200)
+        color=alt.Color("label:N", scale=color_scale, legend=alt.Legend(title=None, orient="bottom", labelFontSize=11, labelColor="#cbd5e1", titleColor="#f1f5f9")),
+        tooltip=[alt.Tooltip("label:N", title=title), alt.Tooltip("value:Q", title="Documents", format=","), alt.Tooltip("pct:Q", title="%", format=".1f")],
+    ).transform_calculate(pct="datum.value / " + str(total) + " * 100")
+
+    # Center text with total count
+    center_text = alt.Chart(pd.DataFrame({"total": [total], "title": [title]})).mark_text(
+        align="center", baseline="middle", fontSize=24, fontWeight=700, color="#f1f5f9", dy=-8
+    ).encode(text=alt.Text("total:Q", format=","))
+    
+    # Center subtitle
+    center_sub = alt.Chart(pd.DataFrame({"title": [title]})).mark_text(
+        align="center", baseline="middle", fontSize=11, color="#94a3b8", dy=18
+    ).encode(text=alt.Text("title:N"))
+
+    chart = alt.layer(donut, center_text, center_sub).resolve_scale(color="independent")
+    chart = _apply_theme_config(chart, "", height=220)
     box.altair_chart(chart, use_container_width=True)
     return True
 
@@ -437,13 +452,17 @@ def render_category_bars(box, counts: Dict[str, int], title: str) -> bool:
     # Assign consistent colors
     colors = [_CATEGORY_COLORS[i % len(_CATEGORY_COLORS)] for i in range(len(items))]
     color_scale = alt.Scale(domain=[item["label"] for item in items], range=colors)
-    chart = alt.Chart(df).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
-        x=alt.X("value:Q", title="Documents", axis=alt.Axis(grid=True, gridColor="#e2e8f0")),
-        y=alt.Y("label:N", title=None, sort="-x", axis=alt.Axis(labelLimit=200)),
+    chart = alt.Chart(df).mark_bar(
+        cornerRadiusTopRight=4, 
+        cornerRadiusBottomRight=4,
+        size=28,
+    ).encode(
+        x=alt.X("value:Q", title="Documents", axis=alt.Axis(grid=True, gridColor="#334155", gridDash=[2, 2])),
+        y=alt.Y("label:N", title=None, sort="-x", axis=alt.Axis(labelLimit=250, labelFontSize=11, labelColor="#cbd5e1", titleColor="#cbd5e1")),
         color=alt.Color("label:N", scale=color_scale, legend=None),
         tooltip=[alt.Tooltip("label:N", title="Category"), alt.Tooltip("value:Q", title="Documents", format=",")],
     )
-    chart = _apply_theme_config(chart, title, height=max(160, 38 * len(items)))
+    chart = _apply_theme_config(chart, title, height=max(180, 40 * len(items)))
     box.altair_chart(chart, use_container_width=True)
     return True
 
@@ -463,20 +482,46 @@ def render_impact_chart(box, points: List[Dict[str, Any]]) -> bool:
     if not rows:
         return False
     df = pd.DataFrame(rows)
+    
+    # Calculate the actual reduction for annotation
+    baseline = points[0]["baseline_bytes"] if points else 0
+    managed = points[0]["managed_bytes"] if points else 0
+    reduction_bytes = baseline - managed
+    reduction_pct = (reduction_bytes / baseline * 100) if baseline else 0
+    
     # Format bytes for axis
-    chart = alt.Chart(df).mark_line(point=alt.OverlayMarkDef(filled=True, size=60), strokeWidth=2.5).encode(
-        x=alt.X("month:O", title="Month (projected)", axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("bytes:Q", title="Storage used (GB)", axis=alt.Axis(format=".2s", gridColor="#e2e8f0")),
+    chart = alt.Chart(df).mark_line(
+        point=alt.OverlayMarkDef(filled=True, size=80), 
+        strokeWidth=3
+    ).encode(
+        x=alt.X("month:O", title="Month (projected)", axis=alt.Axis(labelAngle=0, labelColor="#94a3b8", titleColor="#cbd5e1", gridColor="#334155", gridDash=[2, 2])),
+        y=alt.Y("bytes:Q", title="Active storage (GB)", axis=alt.Axis(format=".2f", gridColor="#334155", gridDash=[2, 2], labelColor="#94a3b8", titleColor="#cbd5e1")),
         color=alt.Color("series:N",
                         scale=alt.Scale(domain=["Without SMS", "With SMS"], range=["#dc2626", "#059669"]),
-                        legend=alt.Legend(title=None, orient="bottom")),
+                        legend=alt.Legend(title=None, orient="bottom", labelFontSize=12, labelColor="#cbd5e1")),
         tooltip=[
             alt.Tooltip("month:O", title="Month"),
             alt.Tooltip("series:N", title="Scenario"),
-            alt.Tooltip("bytes:Q", title="Storage (GB)", format=".2f"),
+            alt.Tooltip("bytes:Q", title="Storage (GB)", format=".3f"),
         ],
     )
-    chart = _apply_theme_config(chart, "Storage growth: unmanaged vs SMS-managed (Projected)", height=260)
+    
+    # Add reduction annotation
+    reduction_text = f"Potential reduction: {reduction_bytes / 1024:.1f} KB ({reduction_pct:.1f}%)"
+    annotation = alt.Chart(pd.DataFrame({
+        "month": [len(points) // 2] if points else [6],
+        "bytes": [(baseline + managed) / 2] if points else [0],
+        "text": [reduction_text]
+    })).mark_text(
+        align="center", baseline="middle", fontSize=12, fontWeight=600, color="#94a3b8", dy=-20
+    ).encode(
+        x=alt.X("month:O"),
+        y=alt.Y("bytes:Q"),
+        text=alt.Text("text:N"),
+    )
+    
+    chart = (chart + annotation).resolve_scale(y="shared")
+    chart = _apply_theme_config(chart, "Storage growth: unmanaged vs SMS-managed (Projected)", height=280)
     box.altair_chart(chart, use_container_width=True)
     return True
 
