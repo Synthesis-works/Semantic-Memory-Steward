@@ -3,6 +3,7 @@ import time
 from dotenv import load_dotenv
 import streamlit as st
 import pandas as pd
+from pandas.io.formats.style import Styler
 from botocore.exceptions import ClientError
 from sms_agent.pipeline import SMSPipeline
 from sms_agent.actions import ActionRequest, ActionEngine
@@ -70,6 +71,19 @@ hr.sms-divider { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
 /* Service badges — secondary to policy badges */
 .sms-service-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .04em; border: 1px solid; line-height: 1.7; vertical-align: middle; margin-right: 6px; background: #e2e8f0; color: #334155; border-color: #cbd5e1; }
 
+/* Activity log styling */
+.sms-activity-doc { margin: 10px 0 6px 0; padding-bottom: 4px; border-bottom: 1px solid #e2e8f0; }
+.sms-activity-doc-name { font-weight: 600; font-size: 0.86rem; color: #0f172a; }
+.sms-activity-row { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; font-size: 0.84rem; line-height: 1.5; color: #334155; }
+.sms-activity-governance { background: #fffbeb; border-radius: 6px; padding: 6px 8px; margin: 2px 0; border-left: 3px solid #f59e0b; }
+.sms-status-marker { font-size: 0.86rem; width: 18px; text-align: center; flex-shrink: 0; }
+.sms-status-success { color: #059669; }
+.sms-status-running { color: #2563eb; }
+.sms-status-waiting { color: #d97706; }
+.sms-status-failed { color: #dc2626; }
+.sms-activity-title { flex: 1; }
+.sms-activity-detail { margin-left: 26px; font-size: 0.78rem; color: #64748b; padding-top: 2px; }
+
 /* KPI cards — rely on st.container(border=True) but tighten metric display */
 [data-testid="stMetric"] { background: transparent; }
 [data-testid="stMetricLabel"] { color: #475569; font-size: 0.78rem; letter-spacing: .04em; text-transform: uppercase; font-weight: 600; }
@@ -94,6 +108,16 @@ hr.sms-divider { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
     .sms-badge-quarantine { background: #450a0a; color: #fecaca; border-color: #991b1b; }
     .sms-badge-safe { background: #052e16; color: #bbf7d0; border-color: #14532d; }
     .sms-service-badge { background: #1e293b; color: #94a3b8; border-color: #334155; }
+    .sms-activity-doc { border-bottom-color: #334155; }
+    .sms-activity-doc-name { color: #f1f5f9; }
+    .sms-activity-row { color: #cbd5e1; }
+    .sms-activity-governance { background: #422006; border-left-color: #f59e0b; }
+    .sms-activity-title { color: #e2e8f0; }
+    .sms-activity-detail { color: #94a3b8; }
+    .sms-status-success { color: #34d399; }
+    .sms-status-running { color: #60a5fa; }
+    .sms-status-waiting { color: #fbbf24; }
+    .sms-status-failed { color: #f87171; }
     [data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #334155; }
     hr.sms-divider { border-top: 1px solid #334155; }
     [data-testid="stMetricLabel"] { color: #94a3b8; }
@@ -363,17 +387,24 @@ def render_activity(box):
 
     for doc, events in by_doc.items():
         if doc != "—":
-            parts.append(f"\n**{doc}**")
+            parts.append(f'<div class="sms-activity-doc"><span class="sms-activity-doc-name">{doc}</span></div>')
         for event in events:
             marker = _MARKERS.get(event.status, "•")
             badge = _service_badge(event.stage)
+            # Status marker color coding
+            status_class = {
+                "SUCCESS": "sms-status-success",
+                "RUNNING": "sms-status-running",
+                "WAITING": "sms-status-waiting",
+                "FAILED": "sms-status-failed",
+            }.get(event.status, "")
             # Give governance events visual emphasis
             if event.stage in ("POLICY", "HUMAN_APPROVAL"):
-                line = f"**{marker} {badge} {event.title}**"
+                line = f'<div class="sms-activity-row sms-activity-governance"><span class="sms-status-marker {status_class}">{marker}</span>{badge}<span class="sms-activity-title">{event.title}</span></div>'
             else:
-                line = f"{marker} {badge} {event.title}"
+                line = f'<div class="sms-activity-row"><span class="sms-status-marker {status_class}">{marker}</span>{badge}<span class="sms-activity-title">{event.title}</span></div>'
             if event.detail:
-                line += f"\n  {event.detail}"
+                line += f'<div class="sms-activity-detail">{event.detail}</div>'
             parts.append(line)
 
     if active:
@@ -385,7 +416,7 @@ def render_activity(box):
             f"✓ Scan complete in {seconds:.1f}s — "
             f"{last.get('analyzed', 0)} analyzed · "
             f"{last.get('duplicates', 0)} duplicate signals")
-    box.markdown("\n\n".join(parts))
+    box.markdown("\n".join(parts), unsafe_allow_html=True)
 
 
 def execute_governance_action(pipeline, request, record_keep_s3_uri=None):
@@ -988,8 +1019,20 @@ if records:
     st.markdown("### Recent scan results")
     st.caption("Filenames · policy state · sensitivity · importance — policy badges use the same treatment as everywhere else.")
     df = pd.DataFrame(records)
+    display_df = df[["Filename", "Category", "Sensitivity", "Importance", "Policy", "Status"]].copy()
+    # Use a Pandas Styler for theme-aware table rendering (dark-first, light fallback)
+    def _style_table(styler: Styler) -> Styler:
+        # Dark-first styling; light mode remains readable
+        styler.set_table_styles([
+            {"selector": "th", "props": [("background-color", "#1e293b"), ("color", "#f1f5f9"), ("border", "1px solid #334155"), ("font-weight", "600"), ("font-size", "0.82rem"), ("text-transform", "uppercase"), ("letter-spacing", "0.04em")]},
+            {"selector": "td", "props": [("background-color", "#0f172a"), ("color", "#f1f5f9"), ("border", "1px solid #334155"), ("font-size", "0.86rem")]},
+            {"selector": "tr:nth-child(even) td", "props": [("background-color", "#111827")]},
+            {"selector": "table", "props": [("border-collapse", "collapse"), ("width", "100%")]},
+        ])
+        return styler
+    styled = display_df.style.pipe(_style_table).format({"Importance": "{:.2f}"})
     st.dataframe(
-        df[["Filename", "Category", "Sensitivity", "Importance", "Policy", "Status"]],
+        styled,
         use_container_width=True,
         hide_index=True,
         column_config={
